@@ -1,0 +1,24 @@
+# --- Web framework ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# --- Database / ORM ---
+sqlalchemy==2.0.35
+
+# --- Data validation ---
+pydantic==2.9.2
+
+# --- Authentication ---
+python-jose[cryptography]==3.3.0   # JWT creation/verification
+passlib[bcrypt]==1.7.4             # password hashing
+bcrypt==4.0.1                      # pinned: passlib 1.7.4 is incompatible with bcrypt>=4.1
+
+# --- Form/file handling (needed by FastAPI's OAuth2PasswordRequestForm) ---
+python-multipart==0.0.9
+
+# --- Testing ---
+pytest==8.3.3
+httpx==0.27.2                      # test client for FastAPI endpoints
+
+# --- Exploit scripts (attack requests against a running local server) ---
+requests==2.32.3

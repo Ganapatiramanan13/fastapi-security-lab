@@ -1,0 +1,26 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- SQLite databases (generated at runtime, not source) ---
+*.db
+*.sqlite3
+
+# --- Environment / secrets ---
+.env
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Pytest / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
