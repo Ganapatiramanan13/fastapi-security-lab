@@ -189,3 +189,56 @@ class TestAuthenticationRegression:
     def test_invalid_token_rejected(self, client):
         r = client.get("/users/1", headers={"Authorization": "Bearer not-a-real-token"})
         assert r.status_code == 401
+    def test_expired_token_is_rejected(self, client):
+        """An expired JWT must return 401 Unauthorized."""
+        claims = {
+            "sub": "1",
+            "username": "alice",
+            "role": "user",
+            "exp": datetime.now(timezone.utc) - timedelta(minutes=1),
+        }
+
+        token = jwt.encode(
+            claims,
+            SECURE_JWT_SECRET_KEY,
+            algorithm=SECURE_JWT_ALGORITHM,
+        )
+
+        r = client.get(
+            "/users/1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Could not validate credentials"
+    def test_token_for_nonexistent_user_is_rejected(self, client):
+        """A validly signed JWT for a nonexistent user must return 401."""
+        claims = {
+            "sub": "99999",
+            "username": "ghost",
+            "role": "user",
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
+        }
+
+        token = jwt.encode(
+            claims,
+            SECURE_JWT_SECRET_KEY,
+            algorithm=SECURE_JWT_ALGORITHM,
+        )
+
+        r = client.get(
+            "/users/99999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Could not validate credentials"
+
+    def test_malformed_authorization_header_is_rejected(self, client):
+        """An invalid Authorization header must return 401."""
+        r = client.get(
+            "/users/1",
+            headers={"Authorization": "NotBearer token"},
+        )
+
+        assert r.status_code == 401
