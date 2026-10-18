@@ -1,28 +1,37 @@
+
 """
 Login router for the SECURE app.
 
-Same shape as vulnerable_app/routers/login.py, but issues tokens signed
-with the securely-handled secret from secure_app/auth.py.
+Issues JWT tokens signed with the securely handled secret
+and limits repeated login attempts.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from secure_app.limiter import limiter
 from sqlalchemy.orm import Session
 
 from secure_app.auth import authenticate_user, create_access_token
 from secure_app.database import get_db
-from secure_app.schemas import LoginRequest, LoginResponse
+from secure_app.schemas import LoginRequest, LoginResponse, UserOut
 
 router = APIRouter()
 
 
+
+
 @router.post("/login", response_model=LoginResponse)
-def login(credentials: LoginRequest, db: Session = Depends(get_db)):
-    """
-    Verify a username/password pair and, on success, issue a JWT
-    access token. Same generic 401 on failure regardless of whether the
-    username exists or the password was wrong.
-    """
-    user = authenticate_user(db, credentials.username, credentials.password)
+@limiter.limit("5/minute")
+def login(
+    request: Request,
+    credentials: LoginRequest,
+    db: Session = Depends(get_db),
+):
+    """Authenticate credentials and issue a JWT on success."""
+    user = authenticate_user(
+        db,
+        credentials.username,
+        credentials.password,
+    )
 
     if user is None:
         raise HTTPException(
@@ -36,5 +45,5 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
         message="Login successful",
         access_token=access_token,
         token_type="bearer",
-        user=user,
+        user=UserOut.model_validate(user),
     )

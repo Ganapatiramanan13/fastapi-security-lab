@@ -33,9 +33,11 @@ KNOWN_WEAK_SECRET = "supersecret"
 
 @pytest.fixture(autouse=True)
 def reset_secure_db():
-    """Reseed the secure database before every test for a clean, deterministic state."""
-    seed_secure()
+    """Reset the database and rate-limit state before every test."""
+    from secure_app.limiter import limiter
 
+    limiter.reset()
+    seed_secure()
 
 @pytest.fixture
 def client():
@@ -242,3 +244,20 @@ class TestAuthenticationRegression:
         )
 
         assert r.status_code == 401
+class TestLoginRateLimit:
+    """Verify excessive login requests are rejected."""
+
+    def test_login_rate_limit_returns_429(self, client):
+        responses = [
+            client.post(
+                "/login",
+                json={
+                    "username": ALICE_USERNAME,
+                    "password": "wrong_password",
+                },
+            )
+            for _ in range(6)
+        ]
+
+        assert all(r.status_code == 401 for r in responses[:5])
+        assert responses[5].status_code == 429
