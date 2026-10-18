@@ -2,197 +2,138 @@
 
 ## Overview
 
-This project is a deliberately vulnerable FastAPI application paired with a
-hardened, security-fixed version of the same application. It exists to
-demonstrate — end to end — the **vulnerability → exploitation → remediation**
-workflow for common REST API security flaws:
+This project is a deliberately vulnerable FastAPI application paired with a hardened, security-fixed version of the same application. It demonstrates the **vulnerability → exploitation → remediation** workflow for common REST API security flaws:
 
 1. A **vulnerable implementation** contains one specific, intentional flaw.
-2. A **standalone exploit script** proves the flaw is real by attacking a
-   locally running instance of the vulnerable app.
+2. A **standalone exploit script** proves the flaw is real by attacking a locally running instance of the vulnerable app.
 3. A **secure implementation** of the same endpoint fixes that exact flaw.
-4. **Automated pytest tests** pin both behaviors down — one suite documents
-   that the vulnerable app is still exploitable, the other regression-tests
-   that the secure app resists the same attack.
+4. **Automated pytest tests** pin both behaviors down — one suite documents that the vulnerable app is still exploitable, the other regression-tests that the secure app resists the same attack.
 
-Everything runs entirely on `127.0.0.1` against local SQLite databases. No
-external systems, third-party hosts, or real user data are ever involved.
-This is a learning/portfolio project, not production software.
+Everything runs entirely on `127.0.0.1` against local SQLite databases. No external systems, third-party hosts, or real user data are ever involved. This is a learning/portfolio project, not production software.
 
 ## Security Objectives
 
-- Show, with working code and a real exploit, exactly how each vulnerability
-  class behaves — not just describe it.
-- Show a concrete, correct fix for each flaw, implemented as an independent
-  application rather than a toggle/flag.
-- Back every fix with an automated regression test, so "secure" isn't just a
-  claim — it's something `pytest` verifies on every run.
-- Practice explaining API security findings the way a real assessment would:
-  affected endpoint, root cause, impact, and remediation.
+- Show, with working code and a real exploit, exactly how each vulnerability class behaves — not just describe it.
+- Show a concrete, correct fix for each flaw, implemented as an independent application rather than a toggle/flag.
+- Back every fix with automated regression tests, so security claims are verified by `pytest`.
+- Practice explaining API security findings the way a real assessment would: affected endpoint, root cause, impact, and remediation.
+- Demonstrate login rate limiting as a security control and verify its behavior with an automated regression test.
 
 ## Vulnerabilities Demonstrated
 
-Three vulnerability categories are currently implemented, each with a
-vulnerable endpoint, a secure fix, an exploit script, and automated tests.
+Three vulnerability categories are intentionally implemented in the vulnerable application, each with a vulnerable endpoint or component, a secure fix, an exploit script, and automated tests.
 
 ### 1. BOLA / IDOR (Broken Object Level Authorization)
 
 - **Affected endpoint:** `GET /users/{user_id}`
-- **What's wrong:** The vulnerable endpoint checks that the caller is
-  *authenticated* (has a valid JWT) but never checks that the caller is
-  *authorized* to view the specific `user_id` being requested. Any logged-in
-  user can fetch any other user's record by changing the ID in the URL.
-- **Impact:** Full enumeration of user accounts (username, email, role) by
-  any authenticated user, regardless of who they actually are.
-- **OWASP mapping:** OWASP API Security Top 10 — **API1:2023 Broken Object
-  Level Authorization**.
-- **Exploit:** `exploits/exploit_bola.py` logs in as Alice, then reuses her
-  own valid token to request `GET /users/2` (Bob's record) and shows the
-  server returns Bob's data with HTTP 200.
-- **Fix:** `secure_app`'s version adds an explicit authorization check —
-  the caller must either own the requested record (`current_user.id ==
-  user_id`) or hold the `admin` role. Everyone else gets `403 Forbidden`,
-  returned *before* the database is even queried, so the check can't be used
-  to enumerate which user IDs exist.
+- **What's wrong:** The vulnerable endpoint checks that the caller is authenticated (has a valid JWT) but never checks that the caller is authorized to view the specific `user_id` being requested. Any logged-in user can fetch another user's record by changing the ID in the URL.
+- **Impact:** Any authenticated user can enumerate user records, including usernames, email addresses, and roles.
+- **OWASP mapping:** OWASP API Security Top 10 — **API1:2023 Broken Object Level Authorization**.
+- **Exploit:** `exploits/exploit_bola.py` logs in as Alice, then reuses her valid token to request `GET /users/2` (Bob's record). The vulnerable server returns Bob's data with HTTP `200 OK`.
+- **Fix:** `secure_app` adds an explicit authorization check. The caller must either own the requested record (`current_user.id == user_id`) or hold the `admin` role. Other callers receive `403 Forbidden`.
 
 ### 2. Mass Assignment
 
 - **Affected endpoint:** `PUT /users/{user_id}`
-- **What's wrong:** The vulnerable update endpoint correctly checks
-  ownership (a user can only update their *own* profile), but then applies
-  every field in the request body directly onto the database row with no
-  allowlist (`for field, value in update_data.items(): setattr(user, field,
-  value)`). Because the request schema includes `role` as an ordinary,
-  client-writable field, a normal user can include `"role": "admin"` in an
-  otherwise-innocent profile update and grant themselves administrator
-  privileges.
-- **Impact:** Full privilege escalation — a standard user becomes an admin
-  in a single authenticated request, with no additional exploit needed.
-- **OWASP mapping:** OWASP API Security Top 10 — **API6:2023 Unrestricted
-  Access to Sensitive Business Flows** family / commonly referred to as
-  **Mass Assignment** (also tracked historically as part of OWASP API3:2019
-  Excessive Data Exposure's inverse case — over-*posting*, not over-*exposing*).
-- **Exploit:** `exploits/exploit_mass_assignment.py` logs in as Alice
-  (`role: "user"`), sends `PUT /users/1` with
-  `{"email": "alice_new@example.com", "role": "admin"}`, and shows her role
-  changes to `"admin"` in the response and on a follow-up `GET`.
-- **Fix:** `secure_app`'s update schema (`UserUpdate`) is a strict allowlist
-  containing only `username` and `email`, with `model_config =
-  ConfigDict(extra="forbid")` — any unexpected field (including `role`)
-  causes Pydantic to reject the whole request with `422 Unprocessable
-  Entity` before the endpoint code even runs. As defense in depth, the
-  endpoint itself also assigns only the two known-safe fields by name,
-  rather than looping over arbitrary request keys.
+- **What's wrong:** The vulnerable update endpoint checks ownership, but applies every field in the request body directly to the database row without an allowlist. Because the update schema permits the `role` field, a normal user can submit `"role": "admin"` in a profile update and grant themselves administrator privileges.
+- **Impact:** A standard user can escalate privileges with a single authenticated request.
+- **OWASP mapping:** This is a mass-assignment/over-posting issue involving object properties. It is related to improper property-level authorization; OWASP API Security Top 10 classifications depend on the specific behavior being assessed.
+- **Exploit:** `exploits/exploit_mass_assignment.py` logs in as Alice (`role: "user"`), sends `PUT /users/1` with `{"email": "alice_new@example.com", "role": "admin"}`, and demonstrates that her role changes to `"admin"`.
+- **Fix:** `secure_app` uses a strict `UserUpdate` schema that permits only `username` and `email`, with `ConfigDict(extra="forbid")`. Unexpected fields such as `role` are rejected with `422 Unprocessable Entity`. The endpoint also assigns only the two explicitly allowed fields.
 
 ### 3. Weak JWT Secret
 
-- **Affected component:** JWT signing in `vulnerable_app/auth.py`,
-  exercised through `GET /admin`
-- **What's wrong:** The vulnerable app signs and verifies all JWTs with a
-  hardcoded secret, `JWT_SECRET_KEY = "supersecret"`, defined directly in
-  source. Since this project's source is public, that secret is public too.
-- **Important finding (how the exploit actually works):** `GET /admin`
-  checks `current_user.role`, and `get_current_user()` re-derives that role
-  by looking the user up in the database using the JWT's `sub` (user ID)
-  claim — it does **not** trust a `role` value embedded in the token
-  directly. This means forging a token with `sub="1"` (Alice's real ID) and
-  `role="admin"` does **not** grant admin access, because the server still
-  looks up Alice's real database role (`"user"`). The actual exploit is more
-  serious: since `sub` is just as forgeable as any other claim, an attacker
-  who knows the signing secret can mint a token with `sub="3"` — the real
-  admin account's database ID — and fully impersonate the admin account,
-  with no password required at all.
-- **Impact:** Complete authentication bypass / account impersonation for
-  any user ID, including the real administrator account, by anyone who has
-  read the (public) source code.
-- **OWASP mapping:** OWASP API Security Top 10 — **API2:2023 Broken
-  Authentication** (weak/guessable/hardcoded signing secrets undermining
-  token integrity).
-- **Exploit:** `exploits/exploit_weak_jwt.py` logs in as Alice for a
-  baseline comparison, confirms her real token correctly gets `403` from
-  `/admin`, then forges two tokens signed with `"supersecret"`: one with
-  `sub="1", role="admin"` (shown to still fail, with an explanation of why),
-  and one with `sub="3"` (the real admin's ID), which succeeds with `200`.
-- **Fix:** `secure_app/auth.py` never hardcodes a secret. It reads
-  `JWT_SECRET_KEY` exclusively from the `SECURE_APP_JWT_SECRET` environment
-  variable and **refuses to start** (raises `RuntimeError` at import time)
-  if that variable is missing or shorter than 32 characters — no silent
-  fallback to any default, weak or otherwise. A token forged with
-  `"supersecret"` fails signature verification against `secure_app` and is
-  rejected with `401` before any role or ID logic even runs.
+- **Affected component:** JWT signing in `vulnerable_app/auth.py`, exercised through `GET /admin`.
+- **What's wrong:** The vulnerable app signs and verifies JWTs with the hardcoded secret `JWT_SECRET_KEY = "supersecret"`. Since the project's source is public, the secret is public too.
+- **Important finding:** `GET /admin` checks `current_user.role`. The application derives that role from the database using the JWT's `sub` claim; it does not trust a `role` claim embedded in the token. Forging a token with `sub="1"` and `role="admin"` therefore does not make Alice an administrator. However, an attacker who knows the signing secret can forge a token with `sub="3"` — the real admin account's database ID — and impersonate that account.
+- **Impact:** Authentication bypass and account impersonation for users whose IDs an attacker can identify, including the administrator.
+- **OWASP mapping:** OWASP API Security Top 10 — **API2:2023 Broken Authentication**.
+- **Exploit:** `exploits/exploit_weak_jwt.py` logs in as Alice for a baseline, confirms her real token receives `403` from `/admin`, and forges two tokens using `"supersecret"`. The token with `sub="1"` still fails, while the token with `sub="3"` succeeds.
+- **Fix:** `secure_app/auth.py` reads the JWT signing secret exclusively from the `SECURE_APP_JWT_SECRET` environment variable. It refuses to start if the variable is missing or the secret is shorter than 32 characters. A token signed using `"supersecret"` fails signature verification against the secure application and is rejected with `401 Unauthorized`.
 
 ### Related robustness fix (both apps)
 
-While reviewing the JWT handling above, a related bug was found and fixed in
-**both** apps' `get_current_user()`: a token with a non-numeric `sub` claim
-used to raise an unhandled `ValueError` when converted with `int()`,
-producing a raw `500 Internal Server Error`. Both apps now catch this
-alongside JWT decoding errors and return a clean `401 Unauthorized` instead.
-This is a correctness fix, not a new vulnerability category — it doesn't
-change the intentional vulnerable behavior above.
+During JWT handling review, a related bug was found in both applications' `get_current_user()`: a token with a non-numeric `sub` claim could raise an unhandled `ValueError` when converted with `int()`, producing a `500 Internal Server Error`.
+
+Both applications now catch this error alongside JWT decoding errors and return `401 Unauthorized`. This is a correctness fix, not a separate intentionally vulnerable category.
+
+## Vulnerability Versus Security Control
+
+The three vulnerability demonstrations above are separate from the login rate-limiting control.
+
+The secure application implements a limit of **5 login requests per minute per client IP** on `POST /login`. Excess requests receive HTTP `429 Too Many Requests`.
+
+The vulnerable application intentionally does not apply this limit, preserving the vulnerable-versus-secure comparison. The current implementation uses an in-memory, IP-based limiter and is intended for this local learning lab, not as a complete production defense.
 
 ## Vulnerable vs. Secure Architecture
 
-`vulnerable_app/` and `secure_app/` are **completely separate FastAPI
-applications** — separate Python packages, separate routers, separate
-`auth.py`, and separate SQLite database files (`vulnerable.db` and
-`secure.db`). Nothing is shared or toggled by a flag. This is deliberate:
-it keeps the vulnerable code simple and honest (nothing about the fix leaks
-into it) and makes every comparison a true side-by-side — same request
-shape, two independently-implemented outcomes.
+`vulnerable_app/` and `secure_app/` are completely separate FastAPI applications with separate Python packages, routers, authentication modules, and SQLite database files (`vulnerable.db` and `secure.db`).
+
+Nothing is shared or toggled by a flag. This keeps the vulnerable implementation independent from the security fixes and allows a true side-by-side comparison.
 
 ## API Endpoints
 
-Both applications expose the same route surface; behavior differs as
-described above.
+Both applications expose the same core route surface, but their security behavior differs.
 
-### `vulnerable_app` (http://127.0.0.1:8000)
+### `vulnerable_app` — http://127.0.0.1:8000
 
-| Method | Path | Auth required | Behavior |
+| Method | Path | Authentication | Behavior |
 |---|---|---|---|
 | GET | `/health` | No | Liveness check — `{"status": "ok"}` |
-| POST | `/login` | No | Verifies credentials, issues an HS256 JWT signed with the hardcoded `"supersecret"` |
-| GET | `/users/{user_id}` | Yes (JWT) | **Vulnerable — BOLA/IDOR:** returns any user's data, no ownership check |
-| PUT | `/users/{user_id}` | Yes (JWT), ownership checked | **Vulnerable — Mass Assignment:** applies any field in the body, including `role`, with no allowlist |
-| GET | `/admin` | Yes (JWT) | Checks the caller's `role` (read from the database via the token's `sub`) |
+| POST | `/login` | No | Verifies credentials and issues an HS256 JWT using the hardcoded `"supersecret"` |
+| GET | `/users/{user_id}` | JWT required | **Vulnerable — BOLA/IDOR:** returns any user's data without an ownership check |
+| PUT | `/users/{user_id}` | JWT required; ownership checked | **Vulnerable — Mass Assignment:** applies arbitrary request fields, including `role` |
+| GET | `/admin` | JWT required | Checks the caller's role using the database record identified by the token's `sub` |
 
-### `secure_app` (http://127.0.0.1:8001)
+### `secure_app` — http://127.0.0.1:8001
 
-| Method | Path | Auth required | Behavior |
+| Method | Path | Authentication | Behavior |
 |---|---|---|---|
 | GET | `/health` | No | Liveness check — `{"status": "ok"}` |
-| POST | `/login` | No | Verifies credentials, issues an HS256 JWT signed with the secret from `SECURE_APP_JWT_SECRET` |
-| GET | `/users/{user_id}` | Yes (JWT) | **Fixed:** self-or-admin only; `403` otherwise |
-| PUT | `/users/{user_id}` | Yes (JWT), ownership checked | **Fixed:** strict `username`/`email` allowlist; unexpected fields (e.g. `role`) → `422` |
-| GET | `/admin` | Yes (JWT) | Requires `role == "admin"`; unreachable via a token forged with the vulnerable app's secret |
-
+| POST | `/login` | No | Verifies credentials, issues an HS256 JWT using `SECURE_APP_JWT_SECRET`, and enforces 5 requests per minute per client IP |
+| GET | `/users/{user_id}` | JWT required | **Fixed:** permits access to the caller's own record or an admin; otherwise returns `403` |
+| PUT | `/users/{user_id}` | JWT required; ownership checked | **Fixed:** permits only `username` and `email`; unexpected fields such as `role` return `422` |
+| GET | `/admin` | JWT required | Requires the caller to have the `admin` role |
+ 
 ## Project Structure
 
-```
+```text
 fastapi-security-lab/
 ├── vulnerable_app/          # Intentionally insecure FastAPI app
-│   ├── auth.py               # Password/JWT handling (hardcoded weak secret)
-│   ├── database.py           # SQLAlchemy engine/session (vulnerable.db)
-│   ├── main.py                # App entrypoint, registers routers
-│   ├── models.py              # User, Order SQLAlchemy models
-│   ├── schemas.py             # Pydantic request/response schemas
-│   ├── seed_data.py           # Deterministic demo data
+│   ├── auth.py              # Password/JWT handling
+│   ├── database.py          # SQLAlchemy engine/session
+│   ├── main.py              # App entrypoint
+│   ├── models.py            # SQLAlchemy models
+│   ├── schemas.py           # Pydantic schemas
+│   ├── seed_data.py         # Demo data
 │   └── routers/
-│       ├── login.py, users.py, admin.py
-├── secure_app/               # Hardened counterpart — same shape, fixed logic
-│   └── (same layout as vulnerable_app/)
-├── exploits/                 # Standalone attack scripts (target vulnerable_app only)
+│       ├── login.py
+│       ├── users.py
+│       └── admin.py
+├── secure_app/              # Hardened counterpart
+│   ├── auth.py              # Secure JWT handling
+│   ├── database.py
+│   ├── main.py              # App and rate-limit configuration
+│   ├── limiter.py           # Shared SlowAPI limiter
+│   ├── models.py
+│   ├── schemas.py
+│   ├── seed_data.py
+│   └── routers/
+│       ├── login.py         # Login endpoint with rate limiting
+│       ├── users.py
+│       └── admin.py
+├── exploits/                # Local exploit scripts
 │   ├── exploit_bola.py
 │   ├── exploit_mass_assignment.py
 │   └── exploit_weak_jwt.py
-├── tests/                    # Automated pytest suite
+├── tests/
 │   ├── conftest.py
 │   ├── test_vulnerable_security.py
 │   └── test_secure_security.py
 ├── docs/
-│   ├── screenshots/           # (reserved for future PoC screenshots)
-│   └── vulnerabilities/       # (reserved for future per-vulnerability write-ups)
-├── evidence/                  # (reserved for future raw request/response captures)
+│   ├── screenshots/
+│   └── vulnerabilities/
+├── evidence/                # Security testing evidence
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -200,7 +141,7 @@ fastapi-security-lab/
 
 ## Setup
 
-Requires Python 3.11+ (developed and tested on Python 3.12).
+Requires Python 3.11+; developed and tested on Python 3.12.
 
 ```bash
 cd fastapi-security-lab
@@ -215,16 +156,14 @@ pip install -r requirements.txt
 
 ### Seed the databases
 
-Each app has its own seed script and its own SQLite file. Run each once
-before starting the corresponding server:
+Each application has its own seed script and SQLite database. Run each script once before starting the corresponding server:
 
 ```bash
 python -m vulnerable_app.seed_data
 python -m secure_app.seed_data
 ```
 
-Both scripts drop and recreate their tables, then insert three deterministic
-demo users (local lab credentials only — not real accounts):
+Both scripts recreate their tables and insert three deterministic demo users for local testing:
 
 | Username | Password | Role |
 |---|---|---|
@@ -232,37 +171,34 @@ demo users (local lab credentials only — not real accounts):
 | `bob` | `bob_password123` | `user` |
 | `admin` | `admin_password123` | `admin` |
 
+These are demo credentials for the isolated lab only. Never reuse them in a real system.
+
 ### Run `vulnerable_app` (port 8000)
 
 ```bash
 uvicorn vulnerable_app.main:app --host 127.0.0.1 --port 8000
 ```
 
-No extra configuration needed — the JWT secret is intentionally hardcoded
-for this app.
+No extra configuration is required; the JWT secret is intentionally hardcoded in this application to demonstrate the weakness.
 
 ### Run `secure_app` (port 8001)
 
-`secure_app` **requires** `SECURE_APP_JWT_SECRET` to be set — it refuses to
-start otherwise. Generate a strong secret and export it first:
+The secure application requires `SECURE_APP_JWT_SECRET` and refuses to start if the variable is missing or invalid.
+
+Generate a strong secret and export it before starting the server:
 
 ```bash
 export SECURE_APP_JWT_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 uvicorn secure_app.main:app --host 127.0.0.1 --port 8001
 ```
 
-This secret is generated fresh for local use and is never written to a
-file. It must **not** be committed to GitHub — if you keep it in a `.env`
-file for convenience, note that `.env` is already listed in `.gitignore`.
+The secret is generated for local use and is not written to a file. Do not commit it to GitHub. If you keep a secret in a `.env` file for convenience, ensure `.env` remains excluded by `.gitignore`.
 
 ## Exploitation
 
-The exploit scripts are **local lab tools only** — every request target is
-hardcoded to `http://127.0.0.1:8000` (the running `vulnerable_app`). They
-are not written to, and must not be pointed at, any other host.
+The exploit scripts are local lab tools. Their request targets are configured for `http://127.0.0.1:8000`, the vulnerable application. Do not point them at systems you do not own or have permission to test.
 
-With `vulnerable_app` running and seeded (see Setup above), in a separate
-terminal:
+With `vulnerable_app` running and seeded, open another terminal:
 
 ```bash
 source .venv/bin/activate
@@ -272,113 +208,88 @@ python exploits/exploit_mass_assignment.py
 python exploits/exploit_weak_jwt.py
 ```
 
-Each script logs in with real, legitimate demo credentials, prints the
-request/response for each step, and ends with a clear `RESULT:` line
-explaining what it proved. None of them print a complete JWT — only short
-prefixes are shown, consistent with how you'd handle a token in a real
-assessment.
+Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
 
 ## Security Fixes
 
-| Vulnerability | Fix summary |
+| Finding or control | Fix or behavior |
 |---|---|
-| BOLA / IDOR | `secure_app` adds an explicit object-level authorization check (self-or-admin) on `GET /users/{user_id}`, returning `403` before querying the target record. |
-| Mass Assignment | `secure_app` replaces the open update schema with a strict allowlist (`username`, `email` only) using `extra="forbid"`, plus explicit field-by-field assignment in the endpoint — `role` can never reach the database through this endpoint. |
-| Weak JWT Secret | `secure_app` loads the signing secret only from `SECURE_APP_JWT_SECRET`, requires a minimum length, and fails to start rather than falling back to any default. |
-| Non-numeric `sub` claim (robustness) | Both apps now catch `ValueError` alongside JWT decode errors in `get_current_user()`, returning `401` instead of an unhandled `500`. |
+| BOLA / IDOR | `secure_app` checks object-level authorization on `GET /users/{user_id}` and returns `403` for unauthorized cross-user access. |
+| Mass Assignment | `secure_app` allows only `username` and `email` during profile updates and rejects unexpected fields such as `role` with `422`. |
+| Weak JWT Secret | `secure_app` reads the signing secret from `SECURE_APP_JWT_SECRET`, enforces a minimum length, and refuses to start if the secret is missing or too short. |
+| Non-numeric JWT `sub` claim | Both applications return `401` rather than an unhandled `500` when the subject claim cannot be converted to an integer. |
+| Login rate limiting | `secure_app` limits `POST /login` to 5 requests per minute per client IP. Excess requests return `429 Too Many Requests`. |
 
 ## Automated Security Tests
 
-The suite lives in `tests/` and is split by intent:
+The suite is in `tests/` and is split by intent:
 
-- **`tests/test_vulnerable_security.py`** — tests here **intentionally
-  assert the vulnerable behavior**. For example, the BOLA test asserts that
-  Alice's token retrieves Bob's record with `200` — that's the documented
-  flaw, not a bug in the test. If `vulnerable_app` were ever accidentally
-  hardened, these tests would fail, flagging that the demo no longer
-  matches what's documented.
-- **`tests/test_secure_security.py`** — these are genuine **regression
-  tests**: they assert the fixed, secure behavior (e.g. `403` on
-  cross-user access, `422` on an unexpected `role` field). A failure here
-  represents an actual security regression.
-- **`tests/conftest.py`** — supplies a fresh, strong `SECURE_APP_JWT_SECRET`
-  for the test session only, so `secure_app` can be imported and tested
-  (satisfying its own fail-safe startup check honestly).
+- **`tests/test_vulnerable_security.py`** intentionally asserts the vulnerable behavior. For example, a BOLA test confirms that Alice's token can retrieve Bob's record with `200 OK`. This documents the intended flaw rather than representing a test defect.
+- **`tests/test_secure_security.py`** verifies secure behavior, including `403` for unauthorized cross-user access, `422` for an unexpected `role` field, and `429` after excessive login attempts.
+- **`tests/conftest.py`** provides test configuration, including a strong test-only `SECURE_APP_JWT_SECRET`, so the secure application can be imported without weakening its startup validation.
 
-All tests run in-process via FastAPI's `TestClient` — no real network
-calls, no running server required.
+Run the full suite from the repository root:
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-**Current result: 18 passed.**
+**Latest recorded result: 22 passed.**
+
+The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
+
+## Manual Security Testing
+
+The applications can also be tested manually using `curl` or Burp Suite Community Edition.
+
+Examples of behaviors demonstrated during testing:
+
+- **BOLA:** Alice's token retrieves Bob's record from the vulnerable app with `200`; the secure app denies the same cross-user request with `403`.
+- **Mass Assignment:** Alice can change her role to `admin` in the vulnerable app; the secure app rejects the extra `role` property with `422` and leaves her role unchanged.
+- **Function-level authorization:** Alice receives `403` from the secure `/admin` endpoint, while a valid admin account receives `200`.
+- **Login rate limiting:** The first five invalid login attempts return `401`; subsequent attempts during the rate-limit window return `429`.
+
+Use only the local applications and demo credentials when reproducing these results. Redact bearer tokens and other secrets from screenshots before publishing evidence.
 
 ## Learning Outcomes
 
-This project was built to practice and demonstrate:
+This project practices and demonstrates:
 
-- The difference between **authentication** (who are you) and
-  **authorization** (what are you allowed to do) — and how an API can get
-  the first right while completely missing the second.
-- **BOLA/IDOR**: why object-level authorization has to be checked on every
-  request, not just once at login.
-- **Mass assignment**: why request schemas need an explicit allowlist
-  rather than trusting whatever fields a client happens to send.
-- **JWT security fundamentals**: what a signature actually proves (and
-  doesn't prove), and why a hardcoded or weak signing secret undermines the
-  entire authentication scheme.
-- **Secure secret management**: loading secrets from the environment,
-  enforcing a minimum strength, and failing safely (refusing to start)
-  rather than silently degrading.
-- **Negative security testing**: writing tests that prove an attack *fails*
-  against the secure implementation, not just that normal use *succeeds*.
-- **Exploit development in a controlled local lab**: writing small, clearly
-  scoped scripts that prove a vulnerability with real HTTP requests against
-  `127.0.0.1` only.
-- **Security regression testing**: encoding "this must never happen again"
-  as an automated, repeatable test rather than a one-time manual check.
+- The difference between **authentication** (who you are) and **authorization** (what you are allowed to do).
+- **BOLA/IDOR:** why object-level authorization must be checked on every relevant request.
+- **Mass assignment:** why request schemas need explicit allowlists instead of trusting arbitrary client-supplied fields.
+- **JWT security fundamentals:** how hardcoded or weak signing secrets undermine token integrity.
+- **Secure secret management:** loading secrets from the environment and refusing to start when security requirements are not met.
+- **Rate limiting:** restricting repeated login attempts and testing the `429 Too Many Requests` response.
+- **Negative security testing:** proving that an attack fails against the secure implementation.
+- **Controlled exploit development:** writing small scripts that target only the local vulnerable application.
+- **Security regression testing:** encoding expected security behavior as repeatable automated tests.
+- **Manual API testing:** using HTTP requests and Burp Suite to inspect and compare vulnerable and secure behavior.
 
 ## Limitations / Current Scope
 
-**Only the three vulnerability categories listed above are currently
-implemented and tested.** To be explicit about what is *not* in this
-project yet:
+- The project intentionally demonstrates three vulnerability categories in depth: BOLA/IDOR, mass assignment, and weak JWT signing secrets.
+- Rate limiting is implemented only on `secure_app`'s `POST /login` endpoint, at 5 requests per minute per client IP. The vulnerable application intentionally remains unrestricted, and other endpoints are not rate-limited.
+- The current rate limiter is in-memory and IP-based. It is appropriate for this local learning lab but is not a complete production defense against distributed brute-force attempts or resource exhaustion.
+- No dedicated input-validation vulnerability demonstration exists beyond the application's current schema validation.
+- Additional authentication scenarios, such as account lockout, password-strength enforcement, and credential-stuffing defenses, are not implemented.
+- There is no `/orders` API. An `Order` SQLAlchemy model exists for possible future use, but no router or endpoint currently exposes it.
+- There is no separate `/profile` API. Profile viewing and updating are handled through `GET` and `PUT /users/{user_id}`.
 
-- **No rate limiting** is implemented anywhere — `/login` and every other
-  endpoint currently accept unlimited requests.
-- **No dedicated input-validation vulnerability demonstration** exists
-  beyond what Pydantic enforces by default.
-- **No additional Broken Authentication scenarios** (e.g. account lockout,
-  password strength rules, credential stuffing defenses) are implemented.
-- **There is no `/orders` API.** An `Order` SQLAlchemy model exists in
-  `models.py` and is populated by `seed_data.py` for possible future use,
-  but no router or endpoint currently exposes it.
-- **There is no `/profile` API.** Self-profile viewing and updating is
-  handled through `GET`/`PUT /users/{user_id}`, not a separate route.
-
-This project does **not** claim to cover the full OWASP API Security Top
-10 — three related, high-impact categories were chosen and implemented in
-depth rather than covering all categories shallowly.
+This project does not claim to cover the entire OWASP API Security Top 10. It focuses on a smaller set of high-impact issues, with explicit vulnerable behavior, remediation, and testing.
 
 ## Future Extensions
 
-Possible directions if this project continues (none of these exist yet):
+Possible future improvements include:
 
-- Missing rate limiting as its own demonstrated vulnerability (e.g. brute
-  force against `/login`).
-- A dedicated improper input validation scenario.
-- OAuth2/OIDC-based authentication as a comparison to the current JWT flow.
-- Broader OWASP API Security Top 10 coverage (e.g. excessive data exposure,
-  security misconfiguration).
-- Manual testing walkthroughs using Burp Suite against the vulnerable app.
-- CI-based automated security checks (e.g. running the pytest suite and a
-  dependency vulnerability scan on every push).
+- Add a dedicated vulnerable-versus-secure demonstration for unrestricted resource consumption.
+- Add a dedicated improper input-validation vulnerability scenario.
+- Compare the current JWT implementation with OAuth2/OIDC-based authentication.
+- Expand OWASP API Security Top 10 coverage.
+- Add more documented Burp Suite testing walkthroughs.
+- Add CI-based automated checks that run pytest and dependency vulnerability scans on each push.
+- Explore a shared rate-limit backend for multi-worker or distributed deployments.
 
 ## Disclaimer
 
-This project is **intentionally vulnerable** and built strictly for local,
-authorized security education and self-testing. It is not production code,
-has not undergone professional security review, and should never be
-deployed anywhere other than a local, isolated environment. Do not reuse
-`vulnerable_app`'s code, secrets, or patterns in any real system.
+This project is intentionally vulnerable and built strictly for local, authorized security education and self-testing. It is not production software, has not undergone professional security review, and must not be deployed as-is to a public environment. Never reuse the vulnerable application's code, secrets, or security patterns in a real system.
