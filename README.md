@@ -1,5 +1,13 @@
 # FastAPI Security Lab
+## Vulnerability Reports
 
+Detailed write-ups document each vulnerability, its root cause, reproduction steps, security impact, remediation, and verification.
+
+1. [BOLA / IDOR — Broken Object Level Authorization](docs/vulnerabilities/01-bola-idor.md)
+2. [Mass Assignment — Unauthorized Role Modification](docs/vulnerabilities/02-mass-assignment.md)
+3. [Weak JWT Secret — Token Forgery and Account Impersonation](docs/vulnerabilities/03-weak-jwt.md)
+
+Supporting security test evidence is available in the [`evidence/`](evidence/) directory.
 ## Overview
 
 This project is a deliberately vulnerable FastAPI application paired with a hardened, security-fixed version of the same application. It demonstrates the **vulnerability → exploitation → remediation** workflow for common REST API security flaws:
