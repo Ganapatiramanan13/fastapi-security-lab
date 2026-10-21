@@ -96,7 +96,11 @@ screenshot or fabricated log):
   in `test_alice_token_can_view_bobs_profile_bola`.
 
 No full tokens or secrets are included in this document.
+### Supporting Screenshots
 
+- `evidence/01-bola-vulnerable.png` — vulnerable endpoint exposes another user's record.
+- `evidence/02-bola-secure.png` — secure endpoint denies unauthorized access.
+- `evidence/08-bola-burp-secure.png` — secure behavior demonstrated using Burp Suite.
 ## Remediation
 
 `secure_app/routers/users.py` fixes this by adding an explicit

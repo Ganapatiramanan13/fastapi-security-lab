@@ -115,7 +115,12 @@ This is confirmed by both `exploits/exploit_mass_assignment.py`'s
 printed output and the passing assertions in
 `test_alice_can_self_promote_to_admin`. No full tokens or secrets are
 included in this document.
+### Supporting Screenshots
 
+- `evidence/09-mass-assignment-burp-vulnerable.png` — vulnerable request changes the user's role.
+- `evidence/10-mass-assignment-burp-privilege-escalation.png` — demonstrates the resulting privilege escalation.
+- `evidence/11-mass-assignment-burp-secure.png` — secure application rejects the unauthorized field.
+- `evidence/12-mass-assignment-secure-role-unchanged.png` — verifies the user's role remains unchanged.
 ## Remediation
 
 `secure_app` fixes this with two independent, deliberately redundant
