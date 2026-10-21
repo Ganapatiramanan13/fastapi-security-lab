@@ -31,7 +31,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -133,10 +134,10 @@ def get_current_user(
         if user_id is None:
             raise credentials_exception
         # A malformed/forged token can carry a non-numeric "sub" — catch
-        # that here (ValueError) alongside JWTError, so it becomes a
+        # that here (ValueError) alongside InvalidTokenError, so it becomes a
         # clean 401 instead of an unhandled 500.
         user_id = int(user_id)
-    except (JWTError, ValueError):
+    except (InvalidTokenError, ValueError):
         raise credentials_exception
 
     user = db.query(User).filter(User.id == user_id).first()

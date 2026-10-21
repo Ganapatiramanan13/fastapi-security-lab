@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 import secure_app.main as secure_main
 from secure_app.auth import JWT_ALGORITHM as SECURE_JWT_ALGORITHM

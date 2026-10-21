@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 import vulnerable_app.main as vuln_main
 from vulnerable_app.seed_data import seed as seed_vulnerable
