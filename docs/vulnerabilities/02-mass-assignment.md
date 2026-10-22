@@ -85,19 +85,26 @@ without checking *which* fields she can edit.
 
 ## OWASP Mapping
 
-This is commonly referred to as **Mass Assignment** — an API accepting
-client-supplied values for object properties that should be
-system-controlled rather than client-writable, i.e. a failure of
-**property-level authorization**. In the OWASP API Security Top 10
-(2023 edition), this class of issue is covered under **API6:2023 —
-Unrestricted Access to Sensitive Business Flows** and is closely related
-to **API3:2019 Excessive Data Exposure**'s inverse case (excessive data
-*acceptance* rather than excessive data *exposure*). Different sources
-categorize mass assignment slightly differently across OWASP API Top 10
-revisions; this document intentionally avoids forcing a single precise
-numbered category beyond noting the closest, most widely recognized
-mapping, since the underlying concept — missing property-level
-authorization on writes — is the important, unambiguous part.
+**OWASP API Security Top 10 (2023 edition) — API3:2023: Broken Object
+Property Level Authorization.** The vulnerability is mass assignment of
+a sensitive property: the API accepts a client-supplied value for
+`role`, a property that should be system-controlled, not
+client-writable.
+
+Alice's ownership check is correct — she is authorized to update her
+own profile (`current_user.id == user_id`) — but the API never
+separately authorizes *which properties* on that record she may
+change. Alice is authorized to update her own profile; she is not
+authorized to promote herself to administrator. The primary failure
+here is property-level authorization, not object ownership: the
+object-level decision ("can Alice write to user 1 at all?") is
+answered correctly, while the property-level decision ("can Alice set
+`role` on any record, including her own?") is never made at all.
+
+The secure fix is to restrict which fields are writable using an
+allowlist or a dedicated update schema, rather than trying to
+enumerate and block individual sensitive fields after the fact — see
+Remediation below.
 
 ## Evidence
 

@@ -26,6 +26,12 @@ from secure_app.seed_data import seed as seed_secure
 ALICE_USERNAME = "alice"
 ALICE_PASSWORD = "alice_password123"
 
+BOB_USERNAME = "bob"
+BOB_PASSWORD = "bob_password123"
+
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "admin_password123"
+
 # The VULNERABLE app's hardcoded secret. Used here only to prove
 # secure_app does NOT accept tokens signed with it.
 KNOWN_WEAK_SECRET = "supersecret"
@@ -48,6 +54,17 @@ def login_alice(client: TestClient) -> str:
     r = client.post("/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD})
     assert r.status_code == 200
     return r.json()["access_token"]
+
+
+def login_as(client: TestClient, username: str, password: str) -> dict:
+    """
+    Log in as the given seeded user and return the full /login response
+    body (access_token + user info), so callers can read the account's
+    real id/role from the seed data instead of hardcoding either.
+    """
+    r = client.post("/login", json={"username": username, "password": password})
+    assert r.status_code == 200
+    return r.json()
 
 
 def forge_token_with_weak_secret(sub: str, username: str, role: str) -> str:
@@ -78,6 +95,27 @@ class TestSecureBOLAProtection:
         token = login_alice(client)
         r = client.get("/users/2", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 403
+
+    def test_admin_can_view_another_users_profile(self, client):
+        """
+        The admin-or-self rule in secure_app/routers/users.py should let
+        an authenticated admin read ANY user's record, not just their
+        own. Bob's id and the admin's role are both read from their own
+        /login responses (seeded by secure_app/seed_data.py) rather than
+        assumed, so this doesn't depend on a specific numeric id beyond
+        what the seed data actually assigns.
+        """
+        bob_login = login_as(client, BOB_USERNAME, BOB_PASSWORD)
+        bob_id = bob_login["user"]["id"]
+
+        admin_login = login_as(client, ADMIN_USERNAME, ADMIN_PASSWORD)
+        assert admin_login["user"]["role"] == "admin"
+        admin_token = admin_login["access_token"]
+
+        r = client.get(f"/users/{bob_id}", headers={"Authorization": f"Bearer {admin_token}"})
+        assert r.status_code == 200
+        assert r.json()["id"] == bob_id
+        assert r.json()["username"] == "bob"
 
 
 # ---------------------------------------------------------------------------

@@ -76,7 +76,8 @@ def update_user(
     Let a logged-in user update their own profile.
 
     FIX (compare to vulnerable_app's version — Mass Assignment,
-    OWASP API6:2023). Two layers of defense, deliberately redundant:
+    OWASP API3:2023 — Broken Object Property Level Authorization). Two
+    layers of defense, deliberately redundant:
 
     1. Schema-level allowlist: UserUpdate (schemas.py) only declares
        "username" and "email", and sets extra="forbid". If a client

@@ -70,7 +70,8 @@ def update_user(
     Assignment as its own vulnerability, separate from the BOLA flaw in
     GET /users/{user_id} above.
 
-    VULNERABILITY (intentional — Mass Assignment, OWASP API6:2023):
+    VULNERABILITY (intentional — Mass Assignment, OWASP API3:2023 —
+    Broken Object Property Level Authorization):
     Once ownership is confirmed, every field present in the request
     body is applied directly to the User row with no allowlist:
 

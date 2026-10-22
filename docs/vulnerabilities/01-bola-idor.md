@@ -117,10 +117,11 @@ if not (is_admin or is_self):
 
 - A caller may access their **own** record (`current_user.id ==
   user_id`), or any record if they hold the `admin` role.
-- Everyone else receives `403 Forbidden`, returned **before** the
-  database is queried for the target user — so the check cannot be used
-  to distinguish "exists but forbidden" from "doesn't exist" by timing
-  or response shape.
+- Everyone else receives a consistent `403 Forbidden`, returned
+  **before** the database is queried for the target user. This avoids
+  directly disclosing object existence through differing status codes
+  or response bodies. It does not constitute a general guarantee
+  against every possible timing side channel.
 - `404 Not Found` is still returned separately, only after the
   authorization check passes, for a genuinely missing user ID.
 

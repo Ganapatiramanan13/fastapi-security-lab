@@ -39,7 +39,7 @@ class UserUpdate(BaseModel):
     Fields accepted by PUT /users/{user_id}.
 
     FIX (compare to vulnerable_app.schemas.UserUpdate — Mass Assignment,
-    OWASP API6:2023):
+    OWASP API3:2023 — Broken Object Property Level Authorization):
 
     This is a strict ALLOWLIST. Only "username" and "email" exist on
     this model at all — there is no "role" field here, so a client can

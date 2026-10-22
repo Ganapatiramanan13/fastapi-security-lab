@@ -38,9 +38,8 @@ class UserUpdate(BaseModel):
     """
     Fields accepted by PUT /users/{user_id}.
 
-    VULNERABILITY (intentional — Mass Assignment, OWASP API6:2023 /
-    "Unrestricted Access to Sensitive Business Flows" family, classic
-    OWASP API3:2019 Excessive Data Exposure's mirror-image cousin):
+    VULNERABILITY (intentional — Mass Assignment, OWASP API3:2023 —
+    Broken Object Property Level Authorization):
 
     Every field here is optional so a client can update just one field
     at a time — that part is normal. The problem is WHICH fields are

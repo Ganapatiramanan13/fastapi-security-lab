@@ -128,6 +128,11 @@ missing or misused `role` claim — the authorization logic on `/admin`
 by an attacker's ability to forge the identity (`sub`) the authorization
 check relies on.
 
+Secondary mapping: **CWE-321 (Use of Hard-coded Cryptographic Key)** —
+the signing secret itself is a hardcoded cryptographic key in source
+code, which is the specific weakness that enables the broken-
+authentication impact described above.
+
 ## Evidence
 
 Confirmed via the exploit script and the automated test suite (not a
@@ -166,7 +171,22 @@ if len(JWT_SECRET_KEY) < _MIN_SECRET_LENGTH:  # 32 characters
 
 - The secret is supplied **only** through the `SECURE_APP_JWT_SECRET`
   environment variable — never hardcoded, never committed to source.
-- A minimum length (32 characters) is enforced.
+- A minimum length (32 characters) is enforced. Length alone does not
+  guarantee unpredictability — a 32-character string built from a
+  predictable pattern would pass this check while still being
+  guessable. The value suggested in this project's own setup
+  instructions, `secrets.token_hex(32)`, is cryptographically random,
+  not merely long; the length check is a floor, not a substitute for
+  randomness.
+- Reading the secret from an environment variable keeps it out of
+  source control, but that alone does not guarantee secure storage —
+  it still depends on normal secrets-management practice (restricted
+  access, not logged, not committed in a shared `.env` file).
+- If this secret is ever exposed (leaked logs, a compromised host, an
+  accidentally committed `.env` file), it must be rotated, and the
+  application must reject tokens signed with the old, exposed secret —
+  issuing new tokens under a new secret is not sufficient by itself if
+  old tokens signed with the exposed secret are still accepted.
 - If the variable is missing or too short, the application **fails
   fast**: it raises at import time and refuses to start, rather than
   silently falling back to any default (weak, guessable, or otherwise).
