@@ -45,7 +45,7 @@ Three vulnerability categories are intentionally implemented in the vulnerable a
 - **Affected endpoint:** `PUT /users/{user_id}`
 - **What's wrong:** The vulnerable update endpoint checks ownership, but applies every field in the request body directly to the database row without an allowlist. Because the update schema permits the `role` field, a normal user can submit `"role": "admin"` in a profile update and grant themselves administrator privileges.
 - **Impact:** A standard user can escalate privileges with a single authenticated request.
-- **OWASP mapping:** This is a mass-assignment/over-posting issue involving object properties. It is related to improper property-level authorization; OWASP API Security Top 10 classifications depend on the specific behavior being assessed.
+- **OWASP mapping:** OWASP API Security Top 10 — **API3:2023 Broken Object Property Level Authorization**. The vulnerable endpoint accepts a client-supplied value for the privileged, system-controlled `role` property during a profile update. The object-level ownership check is correct; the control that is missing is property-level authorization.
 - **Exploit:** `exploits/exploit_mass_assignment.py` logs in as Alice (`role: "user"`), sends `PUT /users/1` with `{"email": "alice_new@example.com", "role": "admin"}`, and demonstrates that her role changes to `"admin"`.
 - **Fix:** `secure_app` uses a strict `UserUpdate` schema that permits only `username` and `email`, with `ConfigDict(extra="forbid")`. Unexpected fields such as `role` are rejected with `422 Unprocessable Entity`. The endpoint also assigns only the two explicitly allowed fields.
 
@@ -242,7 +242,7 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 22 passed.**
+**Latest recorded result: 23 passed.**
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 
@@ -295,7 +295,7 @@ Possible future improvements include:
 - Compare the current JWT implementation with OAuth2/OIDC-based authentication.
 - Expand OWASP API Security Top 10 coverage.
 - Add more documented Burp Suite testing walkthroughs.
-- Add CI-based automated checks that run pytest and dependency vulnerability scans on each push.
+- Extend the existing CI workflow (which already runs pytest on every push) to also perform dependency vulnerability scanning.
 - Explore a shared rate-limit backend for multi-worker or distributed deployments.
 
 ## Disclaimer

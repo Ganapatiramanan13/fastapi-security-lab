@@ -154,6 +154,19 @@ No full tokens or the real signing secret value beyond the intentionally
 documented `"supersecret"` are included in this document; no output was
 invented beyond what the script and test actually produce.
 
+### Supporting Screenshots
+
+- `evidence/05-weak-jwt-vulnerable.png` — the weak-JWT exploit run against
+  the vulnerable app (`http://127.0.0.1:8000`): Alice's legitimate token is
+  denied `/admin` with `403`, and a token forged with `"supersecret"` and
+  `sub="3"` (the seeded admin's real database ID) is accepted with `200`
+  and `{"message": "Welcome to the admin area"}`.
+- `evidence/06-weak-jwt-secure.png` — the same `sub="3"` token, forged with
+  `"supersecret"`, sent to the secure app (`http://127.0.0.1:8001`)
+  `GET /admin`: it is rejected with `401 Unauthorized` and
+  `{"detail": "Could not validate credentials"}`, because the secure app
+  verifies signatures against its own secret, which is not `"supersecret"`.
+
 ## Remediation
 
 `secure_app/auth.py` fixes this by removing any hardcoded or default
