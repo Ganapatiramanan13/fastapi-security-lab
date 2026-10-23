@@ -262,3 +262,60 @@ class TestVulnerableBrokenFunctionLevelAuth:
     def test_invalid_token_rejected(self, client):
         r = client.get("/admin/users", headers={"Authorization": "Bearer not-a-real-token"})
         assert r.status_code == 401
+
+
+def _add_dummy_users_vuln(count, start_index=1000):
+    """
+    Insert throwaway users directly into the vulnerable DB to prove the
+    admin-users list is unbounded. password_hash is a dummy value (these
+    rows are only ever listed, never authenticated as), so no bcrypt cost
+    is incurred. The autouse reseed fixture drops these rows before the
+    next test, so no cleanup is needed here.
+    """
+    from vulnerable_app.database import SessionLocal
+    from vulnerable_app.models import User
+
+    db = SessionLocal()
+    try:
+        for i in range(count):
+            n = start_index + i
+            db.add(User(
+                username=f"load_user_{n}",
+                email=f"load_user_{n}@example.com",
+                password_hash="x",
+                role="user",
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# INTENTIONAL VULNERABILITY DEMONSTRATION: Unrestricted Resource Consumption
+#    (GET /admin/users — see vulnerable_app/routers/admin.py)
+# ---------------------------------------------------------------------------
+class TestVulnerableResourceConsumption:
+    """INTENTIONAL VULNERABILITY DEMONSTRATION — not a security guarantee."""
+
+    def test_admin_users_list_is_unbounded(self, client):
+        """
+        INTENTIONAL VULNERABILITY: with 150 extra users inserted, the
+        endpoint returns all 153 accounts in a single response — no page
+        size cap at all (not even the 100 the secure app enforces).
+        """
+        _add_dummy_users_vuln(150)
+        token = login_alice(client)
+        r = client.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert len(r.json()) == 153
+
+    def test_admin_users_ignores_limit_query_param(self, client):
+        """
+        The vulnerable endpoint has no pagination parameters, so a client's
+        ?limit=1 is silently ignored and the full list is still returned.
+        """
+        _add_dummy_users_vuln(150)
+        token = login_alice(client)
+        r = client.get("/admin/users?limit=1", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert len(r.json()) == 153

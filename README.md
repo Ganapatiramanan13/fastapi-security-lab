@@ -8,6 +8,7 @@ Detailed write-ups document each vulnerability, its root cause, reproduction ste
 3. [Weak JWT Secret — Token Forgery and Account Impersonation](docs/vulnerabilities/03-weak-jwt.md)
 4. [Improper Input Validation — Orders API](docs/vulnerabilities/04-improper-input-validation.md)
 5. [Broken Function Level Authorization — Admin Users Endpoint](docs/vulnerabilities/05-broken-function-level-authorization.md)
+6. [Unrestricted Resource Consumption — Admin Users Listing](docs/vulnerabilities/06-unrestricted-resource-consumption.md)
 
 Supporting security test evidence is available in the [`evidence/`](evidence/) directory.
 ## Overview
@@ -79,6 +80,15 @@ Three vulnerability categories are intentionally implemented in the vulnerable a
 - **Exploit:** `exploits/exploit_bfla.py` logs in as Alice (role `user`) and calls `GET /admin/users`: the vulnerable app returns `200` with the full user list, the secure app returns `403`.
 - **Fix:** `secure_app` enforces `current_user.role == "admin"` on the endpoint, returning `403` for non-admins before any data is read. The response schema (`UserOut`) never includes `password_hash` in either app.
 
+### 6. Unrestricted Resource Consumption (Admin Users Listing)
+
+- **Affected endpoint:** `GET /admin/users`
+- **What's wrong:** The vulnerable app returns the entire `users` table in one response with no pagination and no page-size cap (`db.query(User).all()`), and ignores any client-supplied `limit`. A single request's cost scales with the whole dataset, enabling resource exhaustion / bulk retrieval as the table grows.
+- **Impact:** A single cheap request can force an arbitrarily large response (CPU/memory/bandwidth), a denial-of-service and mass-retrieval primitive at scale.
+- **OWASP mapping:** OWASP API Security Top 10 — **API4:2023 Unrestricted Resource Consumption** (CWE-770 Allocation of Resources Without Limits or Throttling / CWE-400).
+- **Exploit:** `exploits/exploit_unrestricted_resource_consumption.py` logs in as admin and sends `GET /admin/users?limit=100000` and `?limit=1`: the vulnerable app accepts the oversized request (`200`) and ignores `limit`; the secure app rejects the oversized request (`422`) and honors `limit=1`.
+- **Fix:** `secure_app` adds validated pagination — `limit` (1–100, default 20) and `offset` (>= 0) — with a deterministic `ORDER BY id`, so a client cannot request an unbounded or oversized page (invalid values return `422`). The admin-role check and the safe `UserOut` schema are preserved.
+
 ### Related robustness fix (both apps)
 
 During JWT handling review, a related bug was found in both applications' `get_current_user()`: a token with a non-numeric `sub` claim could raise an unhandled `ValueError` when converted with `int()`, producing a `500 Internal Server Error`.
@@ -112,7 +122,7 @@ Both applications expose the same core route surface, but their security behavio
 | GET | `/users/{user_id}` | JWT required | **Vulnerable — BOLA/IDOR:** returns any user's data without an ownership check |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Vulnerable — Mass Assignment:** applies arbitrary request fields, including `role` |
 | GET | `/admin` | JWT required | Checks the caller's role using the database record identified by the token's `sub` |
-| GET | `/admin/users` | JWT required | **Vulnerable — BFLA:** lists all users with no admin-role check, so any authenticated user gets `200` |
+| GET | `/admin/users` | JWT required | **Vulnerable — BFLA + Unrestricted Resource Consumption:** no admin-role check, and returns the entire table with no pagination (ignores `limit`) |
 | POST | `/orders` | JWT required | **Vulnerable — Improper Input Validation:** accepts a negative `quantity`/`unit_price` and persists a negative total |
 | GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
 
@@ -125,7 +135,7 @@ Both applications expose the same core route surface, but their security behavio
 | GET | `/users/{user_id}` | JWT required | **Fixed:** permits access to the caller's own record or an admin; otherwise returns `403` |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Fixed:** permits only `username` and `email`; unexpected fields such as `role` return `422` |
 | GET | `/admin` | JWT required | Requires the caller to have the `admin` role |
-| GET | `/admin/users` | JWT required | **Fixed:** requires the `admin` role; non-admins get `403` |
+| GET | `/admin/users` | JWT required | **Fixed:** requires the `admin` role (`403` otherwise) and paginates results (`limit` 1–100 default 20, `offset` >= 0; invalid values `422`) |
 | POST | `/orders` | JWT required | **Fixed:** requires positive `quantity`/`unit_price` and forbids unexpected fields; invalid input returns `422` |
 | GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
  
@@ -163,7 +173,8 @@ fastapi-security-lab/
 │   ├── exploit_mass_assignment.py
 │   ├── exploit_weak_jwt.py
 │   ├── exploit_improper_input_validation.py
-│   └── exploit_bfla.py
+│   ├── exploit_bfla.py
+│   └── exploit_unrestricted_resource_consumption.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_vulnerable_security.py
@@ -246,6 +257,7 @@ python exploits/exploit_mass_assignment.py
 python exploits/exploit_weak_jwt.py
 python exploits/exploit_improper_input_validation.py
 python exploits/exploit_bfla.py
+python exploits/exploit_unrestricted_resource_consumption.py
 ```
 
 Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
@@ -274,7 +286,7 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 49 passed.**
+**Latest recorded result: 60 passed.**
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 

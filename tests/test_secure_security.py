@@ -499,3 +499,89 @@ class TestSecureFunctionLevelAuthProtection:
     def test_invalid_token_rejected(self, client):
         r = client.get("/admin/users", headers={"Authorization": "Bearer not-a-real-token"})
         assert r.status_code == 401
+
+
+def _add_dummy_users_secure(count, start_index=1000):
+    """
+    Insert throwaway users directly into the secure DB (dummy password_hash,
+    never authenticated as) so pagination can be tested with more than the
+    three seeded users. The autouse reset_secure_db fixture drops these rows
+    before the next test.
+    """
+    from secure_app.database import SessionLocal
+    from secure_app.models import User
+
+    db = SessionLocal()
+    try:
+        for i in range(count):
+            n = start_index + i
+            db.add(User(
+                username=f"load_user_{n}",
+                email=f"load_user_{n}@example.com",
+                password_hash="x",
+                role="user",
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: Unrestricted Resource Consumption protection
+#    (GET /admin/users pagination — see secure_app/routers/admin.py, schemas)
+# ---------------------------------------------------------------------------
+class TestSecureResourceConsumption:
+    """SECURITY REGRESSION TEST — a failure here means pagination/bounds regressed."""
+
+    def _admin_headers(self, client):
+        admin = login_as(client, ADMIN_USERNAME, ADMIN_PASSWORD)
+        return {"Authorization": f"Bearer {admin['access_token']}"}
+
+    def test_default_limit_caps_results(self, client):
+        _add_dummy_users_secure(50)  # 53 users total
+        r = client.get("/admin/users", headers=self._admin_headers(client))
+        assert r.status_code == 200
+        assert len(r.json()) == 20  # default page size, not all 53
+
+    def test_custom_limit_and_offset(self, client):
+        _add_dummy_users_secure(50)
+        h = self._admin_headers(client)
+        page1 = client.get("/admin/users?limit=5&offset=0", headers=h)
+        page2 = client.get("/admin/users?limit=5&offset=5", headers=h)
+        assert page1.status_code == 200 and page2.status_code == 200
+        ids1 = [u["id"] for u in page1.json()]
+        ids2 = [u["id"] for u in page2.json()]
+        assert len(ids1) == 5 and len(ids2) == 5
+        assert ids1 == sorted(ids1)            # deterministic ordering
+        assert set(ids1).isdisjoint(ids2)      # offset advances the window
+
+    def test_limit_below_minimum_is_rejected(self, client):
+        r = client.get("/admin/users?limit=0", headers=self._admin_headers(client))
+        assert r.status_code == 422
+
+    def test_limit_above_maximum_is_rejected(self, client):
+        r = client.get("/admin/users?limit=101", headers=self._admin_headers(client))
+        assert r.status_code == 422
+
+    def test_negative_offset_is_rejected(self, client):
+        r = client.get("/admin/users?offset=-1", headers=self._admin_headers(client))
+        assert r.status_code == 422
+
+    def test_admin_role_still_required_with_pagination(self, client):
+        token = login_alice(client)
+        r = client.get("/admin/users?limit=5&offset=0", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 403
+
+    def test_missing_token_rejected(self, client):
+        r = client.get("/admin/users?limit=5")
+        assert r.status_code == 401
+
+    def test_invalid_token_rejected(self, client):
+        r = client.get("/admin/users?limit=5", headers={"Authorization": "Bearer not-a-real-token"})
+        assert r.status_code == 401
+
+    def test_no_password_hash_in_results(self, client):
+        _add_dummy_users_secure(5)
+        r = client.get("/admin/users", headers=self._admin_headers(client))
+        assert r.status_code == 200
+        assert all("password_hash" not in u for u in r.json())
