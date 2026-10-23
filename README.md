@@ -9,6 +9,7 @@ Detailed write-ups document each vulnerability, its root cause, reproduction ste
 4. [Improper Input Validation — Orders API](docs/vulnerabilities/04-improper-input-validation.md)
 5. [Broken Function Level Authorization — Admin Users Endpoint](docs/vulnerabilities/05-broken-function-level-authorization.md)
 6. [Unrestricted Resource Consumption — Admin Users Listing](docs/vulnerabilities/06-unrestricted-resource-consumption.md)
+7. [Brute-Force Authentication — Unthrottled Login](docs/vulnerabilities/07-brute-force.md)
 
 Supporting security test evidence is available in the [`evidence/`](evidence/) directory.
 ## Overview
@@ -89,6 +90,15 @@ Three vulnerability categories are intentionally implemented in the vulnerable a
 - **Exploit:** `exploits/exploit_unrestricted_resource_consumption.py` logs in as admin and sends `GET /admin/users?limit=100000` and `?limit=1`: the vulnerable app accepts the oversized request (`200`) and ignores `limit`; the secure app rejects the oversized request (`422`) and honors `limit=1`.
 - **Fix:** `secure_app` adds validated pagination — `limit` (1–100, default 20) and `offset` (>= 0) — with a deterministic `ORDER BY id`, so a client cannot request an unbounded or oversized page (invalid values return `422`). The admin-role check and the safe `UserOut` schema are preserved.
 
+### 7. Brute-Force Authentication (Unthrottled Login)
+
+- **Affected endpoint:** `POST /login`
+- **What's wrong:** The vulnerable login applies no throttling — no rate limit and no account lockout — so an attacker can submit unlimited password guesses for a known username, each answered `401`. This is the precondition for online brute force and credential stuffing.
+- **Impact:** Weak or reused passwords become practically discoverable at the server's full request rate; the most direct path to account takeover.
+- **OWASP mapping:** OWASP API Security Top 10 — **API2:2023 Broken Authentication** (CWE-307 Improper Restriction of Excessive Authentication Attempts / CWE-799).
+- **Exploit:** `exploits/exploit_brute_force.py` sends a small fixed burst (8) of wrong-password attempts: the vulnerable app answers every one `401` (unthrottled), while the secure app answers the first 5 `401` and the rest `429`.
+- **Fix:** `secure_app` keeps its existing SlowAPI rate limit of 5 requests/minute per client IP on `POST /login` (see `secure_app/limiter.py`); the 6th attempt in the window is rejected with `429` before credentials are checked. IP-based rate limiting is distinct from account lockout and from MFA; see the report for the trade-offs and the client-IP-trust caveat.
+
 ### Related robustness fix (both apps)
 
 During JWT handling review, a related bug was found in both applications' `get_current_user()`: a token with a non-numeric `sub` claim could raise an unhandled `ValueError` when converted with `int()`, producing a `500 Internal Server Error`.
@@ -118,7 +128,7 @@ Both applications expose the same core route surface, but their security behavio
 | Method | Path | Authentication | Behavior |
 |---|---|---|---|
 | GET | `/health` | No | Liveness check — `{"status": "ok"}` |
-| POST | `/login` | No | Verifies credentials and issues an HS256 JWT using the hardcoded `"supersecret"` |
+| POST | `/login` | No | Verifies credentials and issues an HS256 JWT using the hardcoded `"supersecret"`; **Vulnerable — Brute Force:** no rate limit or lockout (unlimited attempts) |
 | GET | `/users/{user_id}` | JWT required | **Vulnerable — BOLA/IDOR:** returns any user's data without an ownership check |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Vulnerable — Mass Assignment:** applies arbitrary request fields, including `role` |
 | GET | `/admin` | JWT required | Checks the caller's role using the database record identified by the token's `sub` |
@@ -131,7 +141,7 @@ Both applications expose the same core route surface, but their security behavio
 | Method | Path | Authentication | Behavior |
 |---|---|---|---|
 | GET | `/health` | No | Liveness check — `{"status": "ok"}` |
-| POST | `/login` | No | Verifies credentials, issues an HS256 JWT using `SECURE_APP_JWT_SECRET`, and enforces 5 requests per minute per client IP |
+| POST | `/login` | No | Verifies credentials, issues an HS256 JWT using `SECURE_APP_JWT_SECRET`, and **rate-limits brute force** at 5 requests/minute per client IP (`429` after the 5th) |
 | GET | `/users/{user_id}` | JWT required | **Fixed:** permits access to the caller's own record or an admin; otherwise returns `403` |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Fixed:** permits only `username` and `email`; unexpected fields such as `role` return `422` |
 | GET | `/admin` | JWT required | Requires the caller to have the `admin` role |
@@ -174,7 +184,8 @@ fastapi-security-lab/
 │   ├── exploit_weak_jwt.py
 │   ├── exploit_improper_input_validation.py
 │   ├── exploit_bfla.py
-│   └── exploit_unrestricted_resource_consumption.py
+│   ├── exploit_unrestricted_resource_consumption.py
+│   └── exploit_brute_force.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_vulnerable_security.py
@@ -258,6 +269,7 @@ python exploits/exploit_weak_jwt.py
 python exploits/exploit_improper_input_validation.py
 python exploits/exploit_bfla.py
 python exploits/exploit_unrestricted_resource_consumption.py
+python exploits/exploit_brute_force.py
 ```
 
 Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
@@ -286,7 +298,7 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 60 passed.**
+**Latest recorded result: 63 passed.**
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 

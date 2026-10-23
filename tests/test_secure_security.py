@@ -585,3 +585,30 @@ class TestSecureResourceConsumption:
         r = client.get("/admin/users", headers=self._admin_headers(client))
         assert r.status_code == 200
         assert all("password_hash" not in u for u in r.json())
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: Brute-Force Authentication protection
+#    (POST /login rate limit — see secure_app/routers/login.py, limiter.py)
+# ---------------------------------------------------------------------------
+class TestSecureBruteForceProtection:
+    """SECURITY REGRESSION TEST — a failure here means brute-force throttling regressed."""
+
+    def test_rate_limit_blocks_after_five_failed_attempts(self, client):
+        """
+        The secure login is rate limited to 5 requests/minute per client IP.
+        Five wrong-password attempts are processed (401); the sixth is
+        throttled with 429 before the credentials are even checked, so an
+        online brute force from one client IP is blunted. The autouse
+        reset_secure_db fixture resets the limiter before each test, so this
+        is deterministic and isolated (no timing dependence).
+        """
+        attempts = [
+            client.post(
+                "/login",
+                json={"username": ALICE_USERNAME, "password": f"wrong-pw-{i}"},
+            )
+            for i in range(6)
+        ]
+        assert all(a.status_code == 401 for a in attempts[:5])  # first 5 rejected
+        assert attempts[5].status_code == 429                   # 6th throttled

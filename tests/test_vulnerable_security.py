@@ -319,3 +319,49 @@ class TestVulnerableResourceConsumption:
         r = client.get("/admin/users?limit=1", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
         assert len(r.json()) == 153
+
+
+# ---------------------------------------------------------------------------
+# INTENTIONAL VULNERABILITY DEMONSTRATION: Brute-Force Authentication
+#    (POST /login — see vulnerable_app/routers/login.py: no throttling)
+# ---------------------------------------------------------------------------
+class TestVulnerableBruteForce:
+    """INTENTIONAL VULNERABILITY DEMONSTRATION — not a security guarantee."""
+
+    def test_unlimited_failed_attempts_then_correct_login_succeeds(self, client):
+        """
+        INTENTIONAL VULNERABILITY: 15 wrong-password attempts against a real
+        seeded user are all answered 401 with no throttling (no 429), and the
+        correct password still works immediately afterwards — proving there
+        is neither rate limiting nor account lockout.
+        """
+        responses = [
+            client.post(
+                "/login",
+                json={"username": ALICE_USERNAME, "password": f"wrong-pw-{i}"},
+            )
+            for i in range(15)
+        ]
+        assert all(r.status_code == 401 for r in responses)   # every attempt rejected
+        assert all(r.status_code != 429 for r in responses)   # never throttled
+
+        # No account lockout: the correct password still works afterwards.
+        ok = client.post(
+            "/login",
+            json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD},
+        )
+        assert ok.status_code == 200
+        assert "access_token" in ok.json()
+
+    def test_nonexistent_user_returns_generic_401(self, client):
+        """
+        A guess for an unknown username is rejected with the same generic 401
+        message as a wrong password, so the response does not disclose whether
+        the account exists.
+        """
+        r = client.post(
+            "/login",
+            json={"username": "ghost_user_xyz", "password": "irrelevant"},
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Invalid username or password"
