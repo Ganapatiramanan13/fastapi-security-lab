@@ -612,3 +612,166 @@ class TestSecureBruteForceProtection:
         ]
         assert all(a.status_code == 401 for a in attempts[:5])  # first 5 rejected
         assert attempts[5].status_code == 429                   # 6th throttled
+
+
+def _secure_user(username):
+    """Read a secure-app user row directly (for asserting lockout state)."""
+    from secure_app.database import SessionLocal
+    from secure_app.models import User
+
+    db = SessionLocal()
+    try:
+        return db.query(User).filter(User.username == username).first()
+    finally:
+        db.close()
+
+
+def _expire_lock_in_db(username):
+    """
+    Deterministically expire an account's lock by setting locked_until to a
+    past timestamp directly in the DB — no sleep / wall-clock dependence.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from secure_app.database import SessionLocal
+    from secure_app.models import User
+
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.username == username).first()
+        u.locked_until = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _reset_limiter():
+    """Clear the per-IP SlowAPI counters so a request can reach the endpoint
+    and the account lockout (not the rate limit) is what we observe."""
+    from secure_app.limiter import limiter
+
+    limiter.reset()
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: per-account temporary lockout (Stage 6)
+#    (POST /login — see secure_app/auth.py authenticate_user_with_lockout)
+# ---------------------------------------------------------------------------
+class TestSecureAccountLockout:
+    """SECURITY REGRESSION TEST — a failure here means account lockout regressed."""
+
+    WRONG = "definitely-wrong"
+
+    def _fail(self, client, username=ALICE_USERNAME, n=1):
+        return [
+            client.post("/login", json={"username": username, "password": f"{self.WRONG}-{i}"})
+            for i in range(n)
+        ]
+
+    # 10. fixture reseeding resets lockout state between tests
+    def test_fixture_reseed_starts_unlocked(self, client):
+        u = _secure_user(ALICE_USERNAME)
+        assert u.failed_login_attempts == 0
+        assert u.locked_until is None
+
+    # 1. failures below threshold do not lock
+    def test_four_failures_then_correct_login_succeeds(self, client):
+        for r in self._fail(client, n=4):
+            assert r.status_code == 401
+        ok = client.post("/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD})
+        assert ok.status_code == 200
+        assert _secure_user(ALICE_USERNAME).failed_login_attempts == 0
+
+    # 2. lockout after the fifth consecutive failure (observed in DB state)
+    def test_account_locked_after_fifth_failure(self, client):
+        for r in self._fail(client, n=5):
+            assert r.status_code == 401
+        u = _secure_user(ALICE_USERNAME)
+        assert u.failed_login_attempts >= 5
+        assert u.locked_until is not None
+
+    # 3. correct password denied while the account remains locked
+    def test_correct_password_denied_while_locked(self, client):
+        for r in self._fail(client, n=5):
+            assert r.status_code == 401
+        _reset_limiter()  # bypass the IP limit so we observe the LOCK, not a 429
+        r = client.post("/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Invalid username or password"  # generic, no enumeration
+
+    # 4. successful login after the lock expires (deterministic, no sleep)
+    def test_login_succeeds_after_lock_expires(self, client):
+        for r in self._fail(client, n=5):
+            assert r.status_code == 401
+        _expire_lock_in_db(ALICE_USERNAME)
+        _reset_limiter()
+        r = client.post("/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD})
+        assert r.status_code == 200
+        u = _secure_user(ALICE_USERNAME)
+        assert u.failed_login_attempts == 0
+        assert u.locked_until is None
+
+    # 5. successful authentication resets prior failures
+    def test_success_resets_failure_counter(self, client):
+        for r in self._fail(client, n=4):
+            assert r.status_code == 401
+        assert client.post(
+            "/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD}
+        ).status_code == 200
+        assert _secure_user(ALICE_USERNAME).failed_login_attempts == 0
+        # Four more failures must NOT lock (counter restarted from zero).
+        _reset_limiter()
+        for r in self._fail(client, n=4):
+            assert r.status_code == 401
+        assert _secure_user(ALICE_USERNAME).locked_until is None
+
+    # 6. per-account isolation: locking Alice does not lock Bob
+    def test_locking_alice_does_not_lock_bob(self, client):
+        for r in self._fail(client, username=ALICE_USERNAME, n=5):
+            assert r.status_code == 401
+        _reset_limiter()
+        bob = client.post("/login", json={"username": BOB_USERNAME, "password": BOB_PASSWORD})
+        assert bob.status_code == 200
+        assert _secure_user(BOB_USERNAME).failed_login_attempts == 0
+
+    # 7. unknown usernames: generic response and no account state created
+    def test_unknown_username_generic_and_no_state(self, client):
+        for i in range(5):
+            r = client.post("/login", json={"username": "ghost_user", "password": f"x-{i}"})
+            assert r.status_code == 401
+            assert r.json()["detail"] == "Invalid username or password"
+        from secure_app.database import SessionLocal
+        from secure_app.models import User
+
+        db = SessionLocal()
+        try:
+            assert db.query(User).filter(User.username == "ghost_user").first() is None
+        finally:
+            db.close()
+        _reset_limiter()
+        assert client.post(
+            "/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD}
+        ).status_code == 200
+
+    # 8. existing IP rate limit still 5x401 then 429
+    def test_ip_rate_limit_still_five_401_then_429(self, client):
+        responses = [
+            client.post("/login", json={"username": ALICE_USERNAME, "password": f"wrong-{i}"})
+            for i in range(6)
+        ]
+        assert all(r.status_code == 401 for r in responses[:5])
+        assert responses[5].status_code == 429
+
+    # 9. interaction/precedence: the IP rate limit answers the 6th request
+    #    (429) before the endpoint runs; after clearing it, the lock yields 401
+    def test_rate_limit_precedes_lockout_then_lock_applies(self, client):
+        responses = [
+            client.post("/login", json={"username": ALICE_USERNAME, "password": f"wrong-{i}"})
+            for i in range(6)
+        ]
+        assert all(r.status_code == 401 for r in responses[:5])
+        assert responses[5].status_code == 429  # rate limit wins the 6th
+        _reset_limiter()
+        # account was locked by the first 5 failures; correct password now 401
+        r = client.post("/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD})
+        assert r.status_code == 401

@@ -94,6 +94,81 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     return user
 
 
+# --- Account lockout (Stage 6) ------------------------------------------
+# After LOCKOUT_MAX_ATTEMPTS consecutive failed-password attempts, an
+# EXISTING account is temporarily locked for LOCKOUT_MINUTES. This
+# complements (does not replace) the per-IP SlowAPI rate limit applied on
+# POST /login in routers/login.py.
+LOCKOUT_MAX_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+
+
+def _naive_utcnow() -> datetime:
+    """Naive UTC "now", matching the DateTime columns (see models._utcnow())."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def authenticate_user_with_lockout(
+    db: Session, username: str, password: str
+) -> User | None:
+    """
+    Authenticate a user, enforcing a per-account temporary lockout on top
+    of the per-IP rate limit applied in the router.
+
+    Policy: after LOCKOUT_MAX_ATTEMPTS (5) consecutive failed-password
+    attempts, the account is locked for LOCKOUT_MINUTES (15). While
+    locked, authentication fails WITHOUT verifying the password, so even
+    the correct password is refused until the lock expires. A successful
+    authentication resets the counter and clears the lock; an expired
+    lock is cleared on the next attempt.
+
+    The return value mirrors authenticate_user() (User on success, None on
+    any failure). The router turns None into the SAME generic 401 used for
+    a wrong password or an unknown username, so a locked known account is
+    indistinguishable from a wrong password — no account enumeration, and
+    no distinct 423 response.
+
+    Unknown usernames create NO persisted state (nothing to lock).
+
+    Concurrency note: the counter update is a read-modify-write within one
+    request's DB session and is NOT atomic across truly concurrent
+    requests on SQLite. For this single-process educational lab that is
+    acceptable; a production system would use an atomic UPDATE / row lock
+    or a dedicated attempt store. See
+    docs/vulnerabilities/08-account-lockout.md.
+    """
+    user = get_user_by_username(db, username)
+    if user is None:
+        return None  # no state for nonexistent usernames
+
+    now = _naive_utcnow()
+
+    # Clear an expired lock before processing this attempt.
+    if user.locked_until is not None and user.locked_until <= now:
+        user.locked_until = None
+        user.failed_login_attempts = 0
+        db.commit()
+
+    # Active lock: fail generically WITHOUT checking the password.
+    if user.locked_until is not None and user.locked_until > now:
+        return None
+
+    # Not locked: verify the password.
+    if not verify_password(password, user.password_hash):
+        user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+        if user.failed_login_attempts >= LOCKOUT_MAX_ATTEMPTS:
+            user.locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
+        db.commit()
+        return None
+
+    # Success: reset any failure state.
+    if user.failed_login_attempts or user.locked_until is not None:
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        db.commit()
+    return user
+
+
 def create_access_token(user: User) -> str:
     """Build a signed JWT for an authenticated user."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)

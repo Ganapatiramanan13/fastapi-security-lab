@@ -35,6 +35,14 @@ class User(Base):
     # "user" or "admin". A plain string is enough for this demo lab.
     role = Column(String, nullable=False, default="user")
 
+    # --- Account-lockout state (Stage 6; secure app only) -------------
+    # Consecutive failed-password attempts since the last success, and
+    # the timestamp (naive UTC) until which the account is temporarily
+    # locked. These back the per-account lockout in auth.py; the
+    # vulnerable app has no equivalent.
+    failed_login_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, nullable=True)
+
     orders = relationship("Order", back_populates="owner")
 
 

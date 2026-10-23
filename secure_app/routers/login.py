@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from secure_app.limiter import limiter
 from sqlalchemy.orm import Session
 
-from secure_app.auth import authenticate_user, create_access_token
+from secure_app.auth import authenticate_user_with_lockout, create_access_token
 from secure_app.database import get_db
 from secure_app.schemas import LoginRequest, LoginResponse, UserOut
 
@@ -26,8 +26,16 @@ def login(
     credentials: LoginRequest,
     db: Session = Depends(get_db),
 ):
-    """Authenticate credentials and issue a JWT on success."""
-    user = authenticate_user(
+    """
+    Authenticate credentials and issue a JWT on success.
+
+    Two layered brute-force controls apply here: the per-IP SlowAPI rate
+    limit above (5/minute) and the per-account temporary lockout inside
+    authenticate_user_with_lockout (5 consecutive failures -> locked 15
+    minutes). A wrong password, an unknown username, and a locked account
+    all return the same generic 401.
+    """
+    user = authenticate_user_with_lockout(
         db,
         credentials.username,
         credentials.password,
