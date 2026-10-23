@@ -11,6 +11,7 @@ Detailed write-ups document each vulnerability, its root cause, reproduction ste
 6. [Unrestricted Resource Consumption — Admin Users Listing](docs/vulnerabilities/06-unrestricted-resource-consumption.md)
 7. [Brute-Force Authentication — Unthrottled Login](docs/vulnerabilities/07-brute-force.md)
 8. [Account Lockout and Authentication Hardening](docs/vulnerabilities/08-account-lockout.md)
+9. [Security Misconfiguration — CORS and Missing Security Headers](docs/vulnerabilities/09-security-misconfiguration.md)
 
 Supporting security test evidence is available in the [`evidence/`](evidence/) directory.
 ## Overview
@@ -109,6 +110,15 @@ Three vulnerability categories are intentionally implemented in the vulnerable a
 - **Trade-offs (documented in the report):** a hard per-account lock enables a targeted lockout DoS (an attacker can lock a victim out with 5 wrong guesses); alternatives include progressive backoff, IP/device-scoped tracking, CAPTCHA, self-service unlock, and MFA. The counter update is not atomic under true concurrency on SQLite, and a persistent DB would need a real migration — both are stated honestly, not claimed as production-grade.
 - **Demo:** `exploits/exploit_account_lockout.py` (loopback-only, 6 requests) makes 5 failed attempts, waits one per-IP rate-limit window, then tries the correct password: the vulnerable app returns `200` (no lockout), the secure app returns `401` (locked).
 
+### 9. Security Misconfiguration (CORS and Missing Security Headers)
+
+- **Affected component:** application-level middleware (CORS + response headers), observed on every endpoint (demonstrated on `GET /health`).
+- **What's wrong:** The vulnerable app uses a wide-open CORS policy (`allow_origins=["*"]` **with** `allow_credentials=True`), which makes Starlette **reflect any caller's `Origin`** and return `Access-Control-Allow-Credentials: true`, and it sets no security headers. A logged-in victim's browser on any site could read the API's authenticated responses, and the app can be framed (clickjacking) or MIME-sniffed.
+- **OWASP mapping:** OWASP API Security Top 10 — **API8:2023 Security Misconfiguration** (CWE-942 Permissive Cross-domain Policy, CWE-1021 clickjacking, CWE-16/CWE-693).
+- **Exploit:** `exploits/exploit_security_misconfiguration.py` (loopback-only, GET/OPTIONS on `/health`) sends an `Origin: https://evil.example` header and inspects the response: the vulnerable app reflects that origin with credentials and sends no security headers; the secure app does not echo the origin, rejects the disallowed preflight with `400`, and sends the headers.
+- **Fix:** `secure_app` restricts CORS to an explicit, configurable allowlist (`SECURE_APP_ALLOWED_ORIGINS`, never a wildcard) and adds `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`, and `Referrer-Policy: no-referrer` to every response. (HSTS is set but only takes effect over HTTPS and provides no protection for this plain-HTTP lab — documented, not claimed.)
+- **Note:** these tests and the demo verify the **server's response headers** via `TestClient`, not full browser same-origin enforcement.
+
 ### Related robustness fix (both apps)
 
 During JWT handling review, a related bug was found in both applications' `get_current_user()`: a token with a non-numeric `sub` claim could raise an unhandled `ValueError` when converted with `int()`, producing a `500 Internal Server Error`.
@@ -137,7 +147,7 @@ Both applications expose the same core route surface, but their security behavio
 
 | Method | Path | Authentication | Behavior |
 |---|---|---|---|
-| GET | `/health` | No | Liveness check — `{"status": "ok"}` |
+| GET | `/health` | No | Liveness check — `{"status": "ok"}`. **Vulnerable — Security Misconfiguration:** wide-open CORS (reflects any origin with credentials), no security headers |
 | POST | `/login` | No | Verifies credentials and issues an HS256 JWT using the hardcoded `"supersecret"`; **Vulnerable — Brute Force:** no rate limit or lockout (unlimited attempts) |
 | GET | `/users/{user_id}` | JWT required | **Vulnerable — BOLA/IDOR:** returns any user's data without an ownership check |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Vulnerable — Mass Assignment:** applies arbitrary request fields, including `role` |
@@ -150,7 +160,7 @@ Both applications expose the same core route surface, but their security behavio
 
 | Method | Path | Authentication | Behavior |
 |---|---|---|---|
-| GET | `/health` | No | Liveness check — `{"status": "ok"}` |
+| GET | `/health` | No | Liveness check — `{"status": "ok"}`. **Fixed:** CORS allowlist (no wildcard) and security headers (`nosniff`, `DENY`/CSP `frame-ancestors`, `Referrer-Policy`) on every response |
 | POST | `/login` | No | Verifies credentials, issues an HS256 JWT using `SECURE_APP_JWT_SECRET`, **rate-limits brute force** at 5 requests/minute per client IP (`429` after the 5th), **and locks an account** for 15 minutes after 5 consecutive failed passwords (generic `401` while locked) |
 | GET | `/users/{user_id}` | JWT required | **Fixed:** permits access to the caller's own record or an admin; otherwise returns `403` |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Fixed:** permits only `username` and `email`; unexpected fields such as `role` return `422` |
@@ -196,7 +206,8 @@ fastapi-security-lab/
 │   ├── exploit_bfla.py
 │   ├── exploit_unrestricted_resource_consumption.py
 │   ├── exploit_brute_force.py
-│   └── exploit_account_lockout.py
+│   ├── exploit_account_lockout.py
+│   └── exploit_security_misconfiguration.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_vulnerable_security.py
@@ -282,6 +293,7 @@ python exploits/exploit_bfla.py
 python exploits/exploit_unrestricted_resource_consumption.py
 python exploits/exploit_brute_force.py
 python exploits/exploit_account_lockout.py
+python exploits/exploit_security_misconfiguration.py
 ```
 
 Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
@@ -310,7 +322,7 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 73 passed.**
+**Latest recorded result: 87 passed.**
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 

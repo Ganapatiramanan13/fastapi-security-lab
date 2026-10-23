@@ -365,3 +365,37 @@ class TestVulnerableBruteForce:
         )
         assert r.status_code == 401
         assert r.json()["detail"] == "Invalid username or password"
+
+
+# ---------------------------------------------------------------------------
+# INTENTIONAL VULNERABILITY DEMONSTRATION: Security Misconfiguration (CORS)
+#    (app-level CORS — see vulnerable_app/main.py)
+# ---------------------------------------------------------------------------
+class TestVulnerableSecurityMisconfiguration:
+    """INTENTIONAL VULNERABILITY DEMONSTRATION — not a security guarantee.
+
+    NOTE: TestClient reports the HEADERS THE SERVER SENDS; it does not enforce
+    the browser's same-origin policy. These assertions therefore show the
+    server misconfiguration (a permissive CORS response), which is what a real
+    browser would act on, not the browser enforcement itself.
+    """
+
+    def test_permissive_cors_reflects_any_origin_with_credentials(self, client):
+        evil = "https://evil.example"
+        r = client.get("/health", headers={"Origin": evil})
+        assert r.status_code == 200
+        # allow_origins=["*"] + allow_credentials=True makes Starlette reflect
+        # the caller's Origin (not literal "*") and allow credentials.
+        assert r.headers.get("access-control-allow-origin") == evil
+        assert r.headers.get("access-control-allow-credentials") == "true"
+
+    def test_no_security_headers_present(self, client):
+        r = client.get("/health")
+        assert r.status_code == 200
+        for h in (
+            "x-content-type-options",
+            "x-frame-options",
+            "content-security-policy",
+            "referrer-policy",
+        ):
+            assert h not in r.headers

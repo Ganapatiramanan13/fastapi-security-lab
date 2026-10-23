@@ -7,6 +7,7 @@ stages, one vulnerability category at a time.
 """
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from vulnerable_app.database import Base, engine
 from vulnerable_app.routers import admin, login, orders, users
@@ -19,6 +20,22 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Vulnerable FastAPI Security Lab",
     description="Intentionally insecure API used for security education.",
+)
+
+# VULNERABILITY (intentional — Security Misconfiguration, OWASP API8:2023):
+# A wide-open CORS policy. allow_origins=["*"] together with
+# allow_credentials=True makes Starlette REFLECT whatever Origin the caller
+# sends and return Access-Control-Allow-Credentials: true, so a logged-in
+# victim's browser on ANY site could read this API's authenticated
+# responses cross-origin. No security headers are set either. (This CORS
+# block is the ONLY change to the vulnerable app for this stage; its
+# endpoints, auth, and authorization are untouched.)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(login.router)

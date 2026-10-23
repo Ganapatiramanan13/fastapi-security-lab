@@ -775,3 +775,122 @@ class TestSecureAccountLockout:
         # account was locked by the first 5 failures; correct password now 401
         r = client.post("/login", json={"username": ALICE_USERNAME, "password": ALICE_PASSWORD})
         assert r.status_code == 401
+
+
+ALLOWED_ORIGIN = "http://localhost:3000"   # matches secure_app's default allowlist
+DISALLOWED_ORIGIN = "https://evil.example"
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: Security Misconfiguration hardening (CORS + headers)
+#    (app-level middleware — see secure_app/main.py)
+# ---------------------------------------------------------------------------
+class TestSecureSecurityMisconfiguration:
+    """SECURITY REGRESSION TEST — CORS allowlist and security headers.
+
+    TestClient verifies the server's response headers, not full browser CORS
+    enforcement; the assertions below show the server behaves correctly (only
+    allowlisted origins are echoed; security headers are present).
+    """
+
+    def test_allowlisted_origin_is_echoed(self, client):
+        r = client.get("/health", headers={"Origin": ALLOWED_ORIGIN})
+        assert r.status_code == 200
+        assert r.headers.get("access-control-allow-origin") == ALLOWED_ORIGIN
+
+    def test_disallowed_origin_is_not_echoed(self, client):
+        r = client.get("/health", headers={"Origin": DISALLOWED_ORIGIN})
+        assert r.status_code == 200
+        # No ACAO matching the evil origin -> a browser blocks the cross-origin read.
+        assert r.headers.get("access-control-allow-origin") != DISALLOWED_ORIGIN
+        assert r.headers.get("access-control-allow-origin") is None
+
+    def test_preflight_allowed_origin_ok(self, client):
+        r = client.options(
+            "/health",
+            headers={"Origin": ALLOWED_ORIGIN, "Access-Control-Request-Method": "GET"},
+        )
+        assert r.status_code == 200
+        assert r.headers.get("access-control-allow-origin") == ALLOWED_ORIGIN
+
+    def test_preflight_disallowed_origin_rejected(self, client):
+        r = client.options(
+            "/health",
+            headers={"Origin": DISALLOWED_ORIGIN, "Access-Control-Request-Method": "GET"},
+        )
+        assert r.status_code == 400  # Starlette: "Disallowed CORS origin"
+
+    def test_security_headers_present(self, client):
+        r = client.get("/health")
+        assert r.status_code == 200
+        assert r.headers.get("x-content-type-options") == "nosniff"
+        assert r.headers.get("x-frame-options") == "DENY"
+        assert "frame-ancestors" in (r.headers.get("content-security-policy") or "")
+        assert r.headers.get("referrer-policy") == "no-referrer"
+        assert "max-age" in (r.headers.get("strict-transport-security") or "")
+
+    def test_security_headers_on_auth_error(self, client):
+        r = client.get("/users/1")  # no token -> 401, still hardened
+        assert r.status_code == 401
+        assert r.headers.get("x-content-type-options") == "nosniff"
+        assert r.headers.get("x-frame-options") == "DENY"
+
+    def test_rate_limit_still_works_and_is_hardened(self, client):
+        responses = [
+            client.post("/login", json={"username": ALICE_USERNAME, "password": f"wrong-{i}"})
+            for i in range(6)
+        ]
+        assert all(r.status_code == 401 for r in responses[:5])
+        assert responses[5].status_code == 429                       # limiter intact
+        assert responses[5].headers.get("x-content-type-options") == "nosniff"  # headers on 429
+
+
+class TestSecureSecurityHeadersCoverage:
+    """Security headers must also appear on preflight and validation errors."""
+
+    def test_security_headers_on_allowed_preflight(self, client):
+        r = client.options(
+            "/health",
+            headers={"Origin": ALLOWED_ORIGIN, "Access-Control-Request-Method": "GET"},
+        )
+        assert r.status_code == 200
+        assert r.headers.get("x-content-type-options") == "nosniff"
+        assert r.headers.get("x-frame-options") == "DENY"
+
+    def test_security_headers_on_validation_error(self, client):
+        # Malformed JSON body -> 422 from the validation handler; headers applied.
+        r = client.post(
+            "/login", content="{bad json", headers={"Content-Type": "application/json"}
+        )
+        assert r.status_code == 422
+        assert r.headers.get("x-content-type-options") == "nosniff"
+
+
+class TestSecureCorsAllowlistParsing:
+    """The CORS allowlist parser trims/filters input and refuses a wildcard."""
+
+    def test_trims_and_filters_entries(self):
+        from secure_app.main import _parse_allowed_origins
+
+        assert _parse_allowed_origins("http://a.com, http://b.com ") == [
+            "http://a.com",
+            "http://b.com",
+        ]
+        assert _parse_allowed_origins("http://a.com,,http://b.com") == [
+            "http://a.com",
+            "http://b.com",
+        ]
+
+    def test_empty_allowlist_fails_closed(self):
+        from secure_app.main import _parse_allowed_origins
+
+        assert _parse_allowed_origins("") == []
+        assert _parse_allowed_origins("   ") == []
+
+    def test_wildcard_is_refused(self):
+        from secure_app.main import _parse_allowed_origins
+
+        with pytest.raises(RuntimeError):
+            _parse_allowed_origins("*")
+        with pytest.raises(RuntimeError):
+            _parse_allowed_origins("http://a.com,*")
