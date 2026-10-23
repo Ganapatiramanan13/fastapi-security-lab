@@ -6,6 +6,7 @@ Detailed write-ups document each vulnerability, its root cause, reproduction ste
 1. [BOLA / IDOR — Broken Object Level Authorization](docs/vulnerabilities/01-bola-idor.md)
 2. [Mass Assignment — Unauthorized Role Modification](docs/vulnerabilities/02-mass-assignment.md)
 3. [Weak JWT Secret — Token Forgery and Account Impersonation](docs/vulnerabilities/03-weak-jwt.md)
+4. [Improper Input Validation — Orders API](docs/vulnerabilities/04-improper-input-validation.md)
 
 Supporting security test evidence is available in the [`evidence/`](evidence/) directory.
 ## Overview
@@ -59,6 +60,15 @@ Three vulnerability categories are intentionally implemented in the vulnerable a
 - **Exploit:** `exploits/exploit_weak_jwt.py` logs in as Alice for a baseline, confirms her real token receives `403` from `/admin`, and forges two tokens using `"supersecret"`. The token with `sub="1"` still fails, while the token with `sub="3"` succeeds.
 - **Fix:** `secure_app/auth.py` reads the JWT signing secret exclusively from the `SECURE_APP_JWT_SECRET` environment variable. It refuses to start if the variable is missing or the secret is shorter than 32 characters. A token signed using `"supersecret"` fails signature verification against the secure application and is rejected with `401 Unauthorized`.
 
+### 4. Improper Input Validation (Orders API)
+
+- **Affected endpoint:** `POST /orders`
+- **What's wrong:** The vulnerable create-order schema accepts `quantity` and `unit_price` with no value constraints, so a negative quantity is accepted and the server computes and persists a negative line total (for example, `amount = -500.0`). The owner is derived from the authenticated user and the total is computed server-side, so this is strictly an input-validation / data-integrity defect, not owner spoofing or a client-dictated total.
+- **Impact:** A standard authenticated user can create impossible orders (negative totals) that corrupt stored business data.
+- **CWE mapping:** **CWE-20 (Improper Input Validation)** and **CWE-1284 (Improper Validation of Specified Quantity in Input)**. This is an input-validation defect, not an OWASP object-/property-level authorization issue, so it is deliberately not mapped to API1/API3.
+- **Exploit:** `exploits/exploit_improper_input_validation.py` logs in as Alice, sends a valid control order, then an invalid order with `quantity=-5`, and reports the status codes (`201` with a negative total against the vulnerable app, `422` against the secure app).
+- **Fix:** `secure_app` uses a strict `OrderCreate` schema: `quantity` and `unit_price` must be greater than zero, finite (NaN/Infinity rejected via `allow_inf_nan=False`), and bounded (`<= 1,000,000`, which keeps the computed total finite); `product` must be non-empty; and `extra="forbid"` blocks unexpected fields. Invalid input is rejected with `422` before any order is created; the total is computed server-side and the owner is taken from the authenticated user.
+
 ### Related robustness fix (both apps)
 
 During JWT handling review, a related bug was found in both applications' `get_current_user()`: a token with a non-numeric `sub` claim could raise an unhandled `ValueError` when converted with `int()`, producing a `500 Internal Server Error`.
@@ -92,6 +102,8 @@ Both applications expose the same core route surface, but their security behavio
 | GET | `/users/{user_id}` | JWT required | **Vulnerable — BOLA/IDOR:** returns any user's data without an ownership check |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Vulnerable — Mass Assignment:** applies arbitrary request fields, including `role` |
 | GET | `/admin` | JWT required | Checks the caller's role using the database record identified by the token's `sub` |
+| POST | `/orders` | JWT required | **Vulnerable — Improper Input Validation:** accepts a negative `quantity`/`unit_price` and persists a negative total |
+| GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
 
 ### `secure_app` — http://127.0.0.1:8001
 
@@ -102,6 +114,8 @@ Both applications expose the same core route surface, but their security behavio
 | GET | `/users/{user_id}` | JWT required | **Fixed:** permits access to the caller's own record or an admin; otherwise returns `403` |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Fixed:** permits only `username` and `email`; unexpected fields such as `role` return `422` |
 | GET | `/admin` | JWT required | Requires the caller to have the `admin` role |
+| POST | `/orders` | JWT required | **Fixed:** requires positive `quantity`/`unit_price` and forbids unexpected fields; invalid input returns `422` |
+| GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
  
 ## Project Structure
 
@@ -117,7 +131,8 @@ fastapi-security-lab/
 │   └── routers/
 │       ├── login.py
 │       ├── users.py
-│       └── admin.py
+│       ├── admin.py
+│       └── orders.py
 ├── secure_app/              # Hardened counterpart
 │   ├── auth.py              # Secure JWT handling
 │   ├── database.py
@@ -129,11 +144,13 @@ fastapi-security-lab/
 │   └── routers/
 │       ├── login.py         # Login endpoint with rate limiting
 │       ├── users.py
-│       └── admin.py
+│       ├── admin.py
+│       └── orders.py
 ├── exploits/                # Local exploit scripts
 │   ├── exploit_bola.py
 │   ├── exploit_mass_assignment.py
-│   └── exploit_weak_jwt.py
+│   ├── exploit_weak_jwt.py
+│   └── exploit_improper_input_validation.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_vulnerable_security.py
@@ -214,6 +231,7 @@ source .venv/bin/activate
 python exploits/exploit_bola.py
 python exploits/exploit_mass_assignment.py
 python exploits/exploit_weak_jwt.py
+python exploits/exploit_improper_input_validation.py
 ```
 
 Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
@@ -242,7 +260,7 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 23 passed.**
+**Latest recorded result: 41 passed.**
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 
@@ -279,9 +297,8 @@ This project practices and demonstrates:
 - The project intentionally demonstrates three vulnerability categories in depth: BOLA/IDOR, mass assignment, and weak JWT signing secrets.
 - Rate limiting is implemented only on `secure_app`'s `POST /login` endpoint, at 5 requests per minute per client IP. The vulnerable application intentionally remains unrestricted, and other endpoints are not rate-limited.
 - The current rate limiter is in-memory and IP-based. It is appropriate for this local learning lab but is not a complete production defense against distributed brute-force attempts or resource exhaustion.
-- No dedicated input-validation vulnerability demonstration exists beyond the application's current schema validation.
 - Additional authentication scenarios, such as account lockout, password-strength enforcement, and credential-stuffing defenses, are not implemented.
-- There is no `/orders` API. An `Order` SQLAlchemy model exists for possible future use, but no router or endpoint currently exposes it.
+- The `/orders` API demonstrates improper input validation (`POST /orders`) and enforces object-level authorization on retrieval (`GET /orders/{order_id}`); see the Orders API report for details.
 - There is no separate `/profile` API. Profile viewing and updating are handled through `GET` and `PUT /users/{user_id}`.
 
 This project does not claim to cover the entire OWASP API Security Top 10. It focuses on a smaller set of high-impact issues, with explicit vulnerable behavior, remediation, and testing.
@@ -291,7 +308,6 @@ This project does not claim to cover the entire OWASP API Security Top 10. It fo
 Possible future improvements include:
 
 - Add a dedicated vulnerable-versus-secure demonstration for unrestricted resource consumption.
-- Add a dedicated improper input-validation vulnerability scenario.
 - Compare the current JWT implementation with OAuth2/OIDC-based authentication.
 - Expand OWASP API Security Top 10 coverage.
 - Add more documented Burp Suite testing walkthroughs.

@@ -11,7 +11,9 @@ fields) even as the vulnerable app's schemas are loosened to demonstrate
 the flaw.
 """
 
-from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------- User schemas ----------
@@ -60,23 +62,47 @@ class UserUpdate(BaseModel):
 
 # ---------- Order schemas ----------
 
-class OrderBase(BaseModel):
-    product: str
-    amount: float
+class OrderCreate(BaseModel):
+    """
+    Fields a client sends to POST /orders in the SECURE app.
+
+    FIX (compare to vulnerable_app — Improper Input Validation, CWE-20 /
+    CWE-1284):
+      - `extra="forbid"` rejects any field this schema does not declare
+        (e.g. a client-supplied `user_id`, `amount`, or `total`) with
+        HTTP 422, so the client can neither choose the owner nor dictate
+        the stored total.
+      - `quantity` must be a positive integer within a sane upper bound
+        (<= 1,000,000). Non-finite values (NaN/Infinity) are not valid
+        integers and are rejected during type coercion.
+      - `unit_price` must be greater than zero, finite (NaN and
+        Infinity are rejected via `allow_inf_nan=False`), and at most
+        1,000,000. The quantity and unit_price upper bounds together
+        keep the server-calculated total finite (<= 1e12), so a
+        non-finite `amount` can never be computed or stored.
+      - `product` must be a non-empty, length-bounded string.
+    The total is never accepted from the client; it is computed
+    server-side (see routers/orders.py).
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    product: str = Field(min_length=1, max_length=200)
+    quantity: int = Field(gt=0, le=1_000_000)
+    unit_price: float = Field(gt=0, le=1_000_000, allow_inf_nan=False)
 
 
-class OrderCreate(OrderBase):
-    """Fields required to create a new order."""
-    pass
-
-
-class OrderOut(OrderBase):
-    """Fields returned to the client."""
+class OrderOut(BaseModel):
+    """What we return for an order. `amount` is the server-calculated total."""
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     user_id: int
+    product: str
+    quantity: int
+    unit_price: float
+    amount: float
     status: str
+    created_at: datetime
 
 
 # ---------- Login schemas ----------

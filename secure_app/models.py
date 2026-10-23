@@ -7,10 +7,17 @@ The difference will come later, in how endpoints validate input and
 enforce authorization.
 """
 
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from datetime import datetime, timezone
+
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 
 from secure_app.database import Base
+
+
+def _utcnow() -> datetime:
+    """Naive UTC timestamp (avoids the deprecated datetime.utcnow())."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class User(Base):
@@ -39,9 +46,16 @@ class Order(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     product = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    unit_price = Column(Float, nullable=False)
+
+    # Server-calculated line total (quantity * unit_price) — never taken
+    # directly from the client.
     amount = Column(Float, nullable=False)
 
     # e.g. "pending", "paid", "shipped"
     status = Column(String, nullable=False, default="pending")
+
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
 
     owner = relationship("User", back_populates="orders")

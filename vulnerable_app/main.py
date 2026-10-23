@@ -9,7 +9,7 @@ stages, one vulnerability category at a time.
 from fastapi import FastAPI
 
 from vulnerable_app.database import Base, engine
-from vulnerable_app.routers import admin, login, users
+from vulnerable_app.routers import admin, login, orders, users
 
 # Create all tables (users, orders) if they don't already exist.
 # In a real project you'd use migrations (e.g. Alembic); for this local
@@ -23,6 +23,7 @@ app = FastAPI(
 
 app.include_router(login.router)
 app.include_router(users.router)
+app.include_router(orders.router)
 app.include_router(admin.router)
 
 

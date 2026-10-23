@@ -48,9 +48,9 @@ def seed():
         db.flush()  # assigns primary keys (alice.id, bob.id, admin.id) without committing yet
 
         orders = [
-            Order(user_id=alice.id, product="Laptop", amount=999.99, status="paid"),
-            Order(user_id=bob.id, product="Headphones", amount=49.50, status="pending"),
-            Order(user_id=admin.id, product="Server Rack", amount=1500.00, status="shipped"),
+            Order(user_id=alice.id, product="Laptop", quantity=1, unit_price=999.99, amount=999.99, status="paid"),
+            Order(user_id=bob.id, product="Headphones", quantity=1, unit_price=49.50, amount=49.50, status="pending"),
+            Order(user_id=admin.id, product="Server Rack", quantity=1, unit_price=1500.00, amount=1500.00, status="shipped"),
         ]
         db.add_all(orders)
 

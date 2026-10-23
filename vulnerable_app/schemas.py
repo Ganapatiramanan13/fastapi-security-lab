@@ -11,6 +11,8 @@ a request schema (e.g. letting a client set "role" directly) — not by
 changing this baseline.
 """
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -62,23 +64,41 @@ class UserUpdate(BaseModel):
 
 # ---------- Order schemas ----------
 
-class OrderBase(BaseModel):
+class OrderCreate(BaseModel):
+    """
+    Fields a client sends to POST /orders in the VULNERABLE app.
+
+    VULNERABILITY (intentional — Improper Input Validation, CWE-20 /
+    CWE-1284 Improper Validation of Specified Quantity in Input):
+    `quantity` and `unit_price` are plain int/float with NO value
+    constraints. Nothing rejects a non-positive quantity or price, so a
+    client can submit quantity=-5 (or 0) and the endpoint will compute
+    and persist a bogus total (e.g. a negative amount). The schema
+    validates *types* but never the *business rules* that make an order
+    meaningful.
+
+    The order owner is NOT a field here — it is always taken from the
+    authenticated user server-side (see routers/orders.py) — so this
+    endpoint demonstrates only the input-validation flaw, not owner
+    spoofing.
+    """
     product: str
-    amount: float
+    quantity: int
+    unit_price: float
 
 
-class OrderCreate(OrderBase):
-    """Fields required to create a new order."""
-    pass
-
-
-class OrderOut(OrderBase):
-    """Fields returned to the client."""
+class OrderOut(BaseModel):
+    """What we return for an order. `amount` is the server-calculated total."""
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     user_id: int
+    product: str
+    quantity: int
+    unit_price: float
+    amount: float
     status: str
+    created_at: datetime
 
 
 # ---------- Login schemas ----------

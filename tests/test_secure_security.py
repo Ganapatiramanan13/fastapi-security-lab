@@ -299,3 +299,171 @@ class TestLoginRateLimit:
 
         assert all(r.status_code == 401 for r in responses[:5])
         assert responses[5].status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: Improper Input Validation protection
+#    (POST /orders, GET /orders/{order_id} — see secure_app/routers/orders.py)
+# ---------------------------------------------------------------------------
+class TestSecureInputValidation:
+    """SECURITY REGRESSION TEST — a failure here means input validation regressed."""
+
+    def test_valid_order_is_created_with_server_calculated_total(self, client):
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": 3, "unit_price": 10.0},
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["amount"] == 30.0
+        assert body["user_id"] == 1
+        assert body["quantity"] == 3
+
+    def test_negative_quantity_is_rejected(self, client):
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": -5, "unit_price": 100.0},
+        )
+        assert r.status_code == 422
+
+    def test_zero_quantity_is_rejected(self, client):
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": 0, "unit_price": 100.0},
+        )
+        assert r.status_code == 422
+
+    def test_negative_price_is_rejected(self, client):
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": 1, "unit_price": -1.0},
+        )
+        assert r.status_code == 422
+
+    def test_unexpected_field_is_rejected(self, client):
+        """extra='forbid' — a client-supplied user_id (owner spoof) is a 422."""
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": 1, "unit_price": 5.0, "user_id": 2},
+        )
+        assert r.status_code == 422
+
+    def test_malformed_json_does_not_500(self, client):
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        r = client.post("/orders", headers=headers, data="{not valid json")
+        assert r.status_code == 422
+
+    def test_missing_required_field_is_rejected(self, client):
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "unit_price": 5.0},
+        )
+        assert r.status_code == 422
+
+    def test_owner_cannot_retrieve_another_users_order(self, client):
+        a_token = login_alice(client)
+        a_headers = {"Authorization": f"Bearer {a_token}"}
+        created = client.post(
+            "/orders",
+            headers=a_headers,
+            json={"product": "Mouse", "quantity": 1, "unit_price": 5.0},
+        )
+        assert created.status_code == 201
+        order_id = created.json()["id"]
+
+        bob = login_as(client, BOB_USERNAME, BOB_PASSWORD)
+        b_headers = {"Authorization": f"Bearer {bob['access_token']}"}
+        r = client.get(f"/orders/{order_id}", headers=b_headers)
+        assert r.status_code == 403
+
+        own = client.get(f"/orders/{order_id}", headers=a_headers)
+        assert own.status_code == 200
+        assert own.json()["id"] == order_id
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: non-finite / overflow numeric input (hardening)
+#    (POST /orders — see secure_app/schemas.py: OrderCreate)
+# ---------------------------------------------------------------------------
+class TestSecureNonFiniteInputValidation:
+    """
+    Hardening for the Orders input-validation fix. Python's JSON parser
+    (used by Starlette) accepts the non-standard literals NaN, Infinity and
+    -Infinity, so those values DO reach the application; they must be
+    rejected by the schema (allow_inf_nan=False / int typing / upper bound)
+    with a 422, not reach the database and raise a 500.
+    """
+
+    def _post_raw(self, client, raw):
+        token = login_alice(client)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        return client.post("/orders", headers=headers, content=raw)
+
+    def test_unit_price_nan_rejected_422(self, client):
+        r = self._post_raw(client, '{"product": "M", "quantity": 1, "unit_price": NaN}')
+        assert r.status_code == 422
+
+    def test_unit_price_infinity_rejected_422(self, client):
+        r = self._post_raw(client, '{"product": "M", "quantity": 1, "unit_price": Infinity}')
+        assert r.status_code == 422
+
+    def test_unit_price_negative_infinity_rejected_422(self, client):
+        r = self._post_raw(client, '{"product": "M", "quantity": 1, "unit_price": -Infinity}')
+        assert r.status_code == 422
+
+    def test_non_finite_quantity_rejected_422(self, client):
+        # quantity is an int field, so Infinity cannot be coerced to it.
+        r = self._post_raw(client, '{"product": "M", "quantity": Infinity, "unit_price": 5.0}')
+        assert r.status_code == 422
+
+    def test_finite_overflow_unit_price_rejected_422(self, client):
+        # 1e308 is finite but would overflow quantity*unit_price to inf;
+        # the <= 1,000,000 upper bound rejects it.
+        r = self._post_raw(client, '{"product": "M", "quantity": 1, "unit_price": 1e308}')
+        assert r.status_code == 422
+
+    def test_no_order_persisted_after_rejected_nonfinite(self, client):
+        # Seed data creates orders with ids 1-3; a rejected request must not
+        # create id 4. Verify as admin (who may read any order).
+        self._post_raw(client, '{"product": "M", "quantity": 1, "unit_price": NaN}')
+        admin = login_as(client, ADMIN_USERNAME, ADMIN_PASSWORD)
+        headers = {"Authorization": f"Bearer {admin['access_token']}"}
+        r = client.get("/orders/4", headers=headers)
+        assert r.status_code == 404
+
+    def test_large_but_bounded_order_succeeds_with_finite_total(self, client):
+        import math
+
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "M", "quantity": 1000000, "unit_price": 1000000.0},
+        )
+        assert r.status_code == 201
+        amount = r.json()["amount"]
+        assert amount == 1_000_000_000_000.0
+        assert math.isfinite(amount)

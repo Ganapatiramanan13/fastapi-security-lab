@@ -166,3 +166,61 @@ class TestGetCurrentUserRobustness:
         r = client.get("/users/1", headers={"Authorization": f"Bearer {forged_token}"})
         assert r.status_code == 401
         assert r.json()["detail"] == "Could not validate credentials"
+
+
+# ---------------------------------------------------------------------------
+# INTENTIONAL VULNERABILITY DEMONSTRATION: Improper Input Validation
+#    (POST /orders — see vulnerable_app/routers/orders.py, schemas.py)
+# ---------------------------------------------------------------------------
+class TestVulnerableInputValidation:
+    """INTENTIONAL VULNERABILITY DEMONSTRATION — not a security guarantee."""
+
+    def test_valid_order_is_created_with_server_calculated_total(self, client):
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": 3, "unit_price": 10.0},
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["amount"] == 30.0        # total computed server-side
+        assert body["user_id"] == 1          # owner derived from the token (Alice)
+        assert body["quantity"] == 3
+
+    def test_negative_quantity_is_accepted_and_persists_negative_total(self, client):
+        """
+        INTENTIONAL VULNERABILITY: the vulnerable schema puts no lower bound
+        on quantity, so quantity=-5 is accepted and a negative total (-500)
+        is computed and persisted — a clear data-integrity violation.
+        """
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": -5, "unit_price": 100.0},
+        )
+        assert r.status_code == 201
+        assert r.json()["amount"] == -500.0
+        order_id = r.json()["id"]
+
+        g = client.get(f"/orders/{order_id}", headers=headers)
+        assert g.status_code == 200
+        assert g.json()["amount"] == -500.0
+
+    def test_client_cannot_choose_order_owner(self, client):
+        """
+        Even the vulnerable endpoint derives the owner from the token, so a
+        client-supplied user_id is ignored (not an owner-spoofing flaw).
+        """
+        token = login_alice(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        r = client.post(
+            "/orders",
+            headers=headers,
+            json={"product": "Mouse", "quantity": 1, "unit_price": 5.0, "user_id": 2},
+        )
+        assert r.status_code == 201
+        assert r.json()["user_id"] == 1      # Alice, not the injected 2
