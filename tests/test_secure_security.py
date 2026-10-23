@@ -467,3 +467,35 @@ class TestSecureNonFiniteInputValidation:
         amount = r.json()["amount"]
         assert amount == 1_000_000_000_000.0
         assert math.isfinite(amount)
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: Broken Function Level Authorization protection
+#    (GET /admin/users — see secure_app/routers/admin.py)
+# ---------------------------------------------------------------------------
+class TestSecureFunctionLevelAuthProtection:
+    """SECURITY REGRESSION TEST — a failure here means function-level authz regressed."""
+
+    def test_ordinary_user_is_forbidden(self, client):
+        token = login_alice(client)
+        r = client.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 403
+
+    def test_admin_can_list_all_users(self, client):
+        admin = login_as(client, ADMIN_USERNAME, ADMIN_PASSWORD)
+        r = client.get(
+            "/admin/users",
+            headers={"Authorization": f"Bearer {admin['access_token']}"},
+        )
+        assert r.status_code == 200
+        users = r.json()
+        assert {"alice", "bob", "admin"} <= {u["username"] for u in users}
+        assert all("password_hash" not in u for u in users)
+
+    def test_missing_token_rejected(self, client):
+        r = client.get("/admin/users")
+        assert r.status_code == 401
+
+    def test_invalid_token_rejected(self, client):
+        r = client.get("/admin/users", headers={"Authorization": "Bearer not-a-real-token"})
+        assert r.status_code == 401

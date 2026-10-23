@@ -224,3 +224,41 @@ class TestVulnerableInputValidation:
         )
         assert r.status_code == 201
         assert r.json()["user_id"] == 1      # Alice, not the injected 2
+
+
+# ---------------------------------------------------------------------------
+# INTENTIONAL VULNERABILITY DEMONSTRATION: Broken Function Level Authorization
+#    (GET /admin/users — see vulnerable_app/routers/admin.py)
+# ---------------------------------------------------------------------------
+class TestVulnerableBrokenFunctionLevelAuth:
+    """INTENTIONAL VULNERABILITY DEMONSTRATION — not a security guarantee."""
+
+    def test_ordinary_user_can_list_all_users_bfla(self, client):
+        """
+        INTENTIONAL VULNERABILITY: an ordinary user (Alice, role "user")
+        calls the admin-only GET /admin/users and receives 200 with every
+        account, because the endpoint never checks the admin role.
+        """
+        token = login_alice(client)
+        r = client.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        users = r.json()
+        usernames = {u["username"] for u in users}
+        assert {"alice", "bob", "admin"} <= usernames
+        assert all("password_hash" not in u for u in users)
+
+    def test_admin_can_list_all_users(self, client):
+        r = client.post("/login", json={"username": "admin", "password": "admin_password123"})
+        assert r.status_code == 200
+        token = r.json()["access_token"]
+        r = client.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert len(r.json()) >= 3
+
+    def test_missing_token_rejected(self, client):
+        r = client.get("/admin/users")
+        assert r.status_code == 401
+
+    def test_invalid_token_rejected(self, client):
+        r = client.get("/admin/users", headers={"Authorization": "Bearer not-a-real-token"})
+        assert r.status_code == 401

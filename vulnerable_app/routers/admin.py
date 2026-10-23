@@ -11,9 +11,12 @@ even though they never authenticated as an actual admin.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
 from vulnerable_app.auth import get_current_user
+from vulnerable_app.database import get_db
 from vulnerable_app.models import User
+from vulnerable_app.schemas import UserOut
 
 router = APIRouter()
 
@@ -38,3 +41,26 @@ def admin_dashboard(current_user: User = Depends(get_current_user)):
         )
 
     return {"message": "Welcome to the admin area"}
+
+@router.get("/admin/users", response_model=list[UserOut])
+def list_users(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    List every user — an administrative function.
+
+    VULNERABILITY (intentional — Broken Function Level Authorization,
+    OWASP API5:2023 / CWE-285): this endpoint checks only that the caller
+    is AUTHENTICATED (a valid JWT via get_current_user); it never checks
+    that the caller holds the admin ROLE. Compare GET /admin above, which
+    DOES check current_user.role. Because that function-level check is
+    simply missing here, ANY logged-in user — including an ordinary
+    "user" — can call this admin-only function and enumerate every
+    account (usernames, emails, roles).
+
+    The response schema is still UserOut, so password hashes are never
+    exposed: the flaw demonstrated here is the MISSING AUTHORIZATION on a
+    privileged function, not sensitive-field leakage.
+    """
+    return db.query(User).all()

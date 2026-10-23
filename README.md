@@ -7,6 +7,7 @@ Detailed write-ups document each vulnerability, its root cause, reproduction ste
 2. [Mass Assignment — Unauthorized Role Modification](docs/vulnerabilities/02-mass-assignment.md)
 3. [Weak JWT Secret — Token Forgery and Account Impersonation](docs/vulnerabilities/03-weak-jwt.md)
 4. [Improper Input Validation — Orders API](docs/vulnerabilities/04-improper-input-validation.md)
+5. [Broken Function Level Authorization — Admin Users Endpoint](docs/vulnerabilities/05-broken-function-level-authorization.md)
 
 Supporting security test evidence is available in the [`evidence/`](evidence/) directory.
 ## Overview
@@ -69,6 +70,15 @@ Three vulnerability categories are intentionally implemented in the vulnerable a
 - **Exploit:** `exploits/exploit_improper_input_validation.py` logs in as Alice, sends a valid control order, then an invalid order with `quantity=-5`, and reports the status codes (`201` with a negative total against the vulnerable app, `422` against the secure app).
 - **Fix:** `secure_app` uses a strict `OrderCreate` schema: `quantity` and `unit_price` must be greater than zero, finite (NaN/Infinity rejected via `allow_inf_nan=False`), and bounded (`<= 1,000,000`, which keeps the computed total finite); `product` must be non-empty; and `extra="forbid"` blocks unexpected fields. Invalid input is rejected with `422` before any order is created; the total is computed server-side and the owner is taken from the authenticated user.
 
+### 5. Broken Function Level Authorization (BFLA)
+
+- **Affected endpoint:** `GET /admin/users`
+- **What's wrong:** The vulnerable app adds an administrative "list all users" endpoint that checks only that the caller is authenticated, not that they hold the `admin` role. Any ordinary logged-in user can call it and enumerate every account (usernames, emails, roles). The existing `GET /admin` is unchanged; this is a separate, new administrative function that simply omits the role check.
+- **Impact:** A low-privilege user can invoke an admin-only function and read all users' data; on a state-changing admin function the same flaw would allow privilege escalation.
+- **OWASP mapping:** OWASP API Security Top 10 — **API5:2023 Broken Function Level Authorization** (CWE-285 Improper Authorization / CWE-862 Missing Authorization).
+- **Exploit:** `exploits/exploit_bfla.py` logs in as Alice (role `user`) and calls `GET /admin/users`: the vulnerable app returns `200` with the full user list, the secure app returns `403`.
+- **Fix:** `secure_app` enforces `current_user.role == "admin"` on the endpoint, returning `403` for non-admins before any data is read. The response schema (`UserOut`) never includes `password_hash` in either app.
+
 ### Related robustness fix (both apps)
 
 During JWT handling review, a related bug was found in both applications' `get_current_user()`: a token with a non-numeric `sub` claim could raise an unhandled `ValueError` when converted with `int()`, producing a `500 Internal Server Error`.
@@ -102,6 +112,7 @@ Both applications expose the same core route surface, but their security behavio
 | GET | `/users/{user_id}` | JWT required | **Vulnerable — BOLA/IDOR:** returns any user's data without an ownership check |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Vulnerable — Mass Assignment:** applies arbitrary request fields, including `role` |
 | GET | `/admin` | JWT required | Checks the caller's role using the database record identified by the token's `sub` |
+| GET | `/admin/users` | JWT required | **Vulnerable — BFLA:** lists all users with no admin-role check, so any authenticated user gets `200` |
 | POST | `/orders` | JWT required | **Vulnerable — Improper Input Validation:** accepts a negative `quantity`/`unit_price` and persists a negative total |
 | GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
 
@@ -114,6 +125,7 @@ Both applications expose the same core route surface, but their security behavio
 | GET | `/users/{user_id}` | JWT required | **Fixed:** permits access to the caller's own record or an admin; otherwise returns `403` |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Fixed:** permits only `username` and `email`; unexpected fields such as `role` return `422` |
 | GET | `/admin` | JWT required | Requires the caller to have the `admin` role |
+| GET | `/admin/users` | JWT required | **Fixed:** requires the `admin` role; non-admins get `403` |
 | POST | `/orders` | JWT required | **Fixed:** requires positive `quantity`/`unit_price` and forbids unexpected fields; invalid input returns `422` |
 | GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
  
@@ -150,7 +162,8 @@ fastapi-security-lab/
 │   ├── exploit_bola.py
 │   ├── exploit_mass_assignment.py
 │   ├── exploit_weak_jwt.py
-│   └── exploit_improper_input_validation.py
+│   ├── exploit_improper_input_validation.py
+│   └── exploit_bfla.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_vulnerable_security.py
@@ -232,6 +245,7 @@ python exploits/exploit_bola.py
 python exploits/exploit_mass_assignment.py
 python exploits/exploit_weak_jwt.py
 python exploits/exploit_improper_input_validation.py
+python exploits/exploit_bfla.py
 ```
 
 Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
@@ -260,7 +274,7 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 41 passed.**
+**Latest recorded result: 49 passed.**
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 
