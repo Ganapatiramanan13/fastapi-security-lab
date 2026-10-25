@@ -31,3 +31,32 @@ jobs:
         env:
           SECURE_APP_JWT_SECRET: ci-test-secret-key-at-least-32-characters-long
         run: python -m pytest tests/ -v
+
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+
+      # Audits the project's DECLARED dependencies (requirements.txt)
+      # without installing the application into this job, so the scan is
+      # scoped to the app's dependencies (not pip-audit's own). pip-audit
+      # exits non-zero if any known vulnerability is found, so findings
+      # fail this job rather than being silently suppressed. This job is
+      # independent of the test job above, which is unchanged.
+      - name: Audit declared dependencies for known vulnerabilities
+        run: pip-audit -r requirements.txt

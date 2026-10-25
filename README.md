@@ -35,7 +35,7 @@ Everything runs entirely on `127.0.0.1` against local SQLite databases. No exter
 
 ## Vulnerabilities Demonstrated
 
-Three vulnerability categories are intentionally implemented in the vulnerable application, each with a vulnerable endpoint or component, a secure fix, an exploit script, and automated tests.
+Nine security topics are demonstrated across the two applications, each with a vulnerable behavior or missing control, a secure fix, an exploit or demonstration script, and automated tests.
 
 ### 1. BOLA / IDOR (Broken Object Level Authorization)
 
@@ -127,7 +127,7 @@ Both applications now catch this error alongside JWT decoding errors and return 
 
 ## Vulnerability Versus Security Control
 
-The three vulnerability demonstrations above are separate from the login rate-limiting control.
+The vulnerability demonstrations above are separate from the login rate-limiting control.
 
 The secure application implements a limit of **5 login requests per minute per client IP** on `POST /login`. Excess requests receive HTTP `429 Too Many Requests`.
 
@@ -356,10 +356,10 @@ This project practices and demonstrates:
 
 ## Limitations / Current Scope
 
-- The project intentionally demonstrates three vulnerability categories in depth: BOLA/IDOR, mass assignment, and weak JWT signing secrets.
+- The project demonstrates nine security topics in depth: BOLA/IDOR, mass assignment, weak JWT signing secrets, improper input validation, broken function-level authorization, unrestricted resource consumption, brute-force authentication, account lockout, and security misconfiguration (CORS and headers).
 - Rate limiting is implemented only on `secure_app`'s `POST /login` endpoint, at 5 requests per minute per client IP. The vulnerable application intentionally remains unrestricted, and other endpoints are not rate-limited.
 - The current rate limiter is in-memory and IP-based. It is appropriate for this local learning lab but is not a complete production defense against distributed brute-force attempts or resource exhaustion.
-- Additional authentication scenarios, such as account lockout, password-strength enforcement, and credential-stuffing defenses, are not implemented.
+- Additional authentication scenarios, such as password-strength enforcement and credential-stuffing defenses, are not implemented. (Account lockout is implemented — see the Account Lockout report.)
 - The `/orders` API demonstrates improper input validation (`POST /orders`) and enforces object-level authorization on retrieval (`GET /orders/{order_id}`); see the Orders API report for details.
 - There is no separate `/profile` API. Profile viewing and updating are handled through `GET` and `PUT /users/{user_id}`.
 
@@ -369,11 +369,10 @@ This project does not claim to cover the entire OWASP API Security Top 10. It fo
 
 Possible future improvements include:
 
-- Add a dedicated vulnerable-versus-secure demonstration for unrestricted resource consumption.
 - Compare the current JWT implementation with OAuth2/OIDC-based authentication.
 - Expand OWASP API Security Top 10 coverage.
 - Add more documented Burp Suite testing walkthroughs.
-- Extend the existing CI workflow (which already runs pytest on every push) to also perform dependency vulnerability scanning.
+- Extend CI security checks further (for example static analysis / code scanning and a coverage gate) on top of the dependency audit (`pip-audit`) now run on every push.
 - Explore a shared rate-limit backend for multi-worker or distributed deployments.
 
 ## Disclaimer
