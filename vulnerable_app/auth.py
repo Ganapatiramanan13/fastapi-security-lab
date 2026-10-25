@@ -148,7 +148,36 @@ def get_current_user(
     )
 
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        # VULNERABILITY (intentional — JWT algorithm-verification flaw /
+        # alg:none, OWASP API2:2023 / CWE-347): this verifier trusts the
+        # algorithm the TOKEN declares in its own header instead of pinning
+        # HS256. If a token's header says alg:"none", it is accepted WITHOUT
+        # any signature check — the classic alg:none bypass — letting an
+        # attacker forge a token for ANY user (e.g. the admin) WITHOUT
+        # knowing the signing secret at all.
+        #
+        # The flaw is scoped to the algorithm decision only: a normal HS256
+        # token is STILL verified against JWT_SECRET_KEY, so legitimate auth
+        # and the separate weak-secret demonstration are unchanged — signature
+        # verification is disabled solely for the alg:none path being shown
+        # here. Time-based claim validation is deliberately KEPT ON for this
+        # path (verify_exp / verify_nbf, and exp is required), so the flaw is
+        # isolated to signature verification and is NOT also an expired- or
+        # missing-exp bypass. The secure app pins algorithms=["HS256"] and
+        # rejects alg:none outright.
+        if jwt.get_unverified_header(token).get("alg") == "none":
+            payload = jwt.decode(
+                token,
+                algorithms=["none"],
+                options={
+                    "verify_signature": False,
+                    "verify_exp": True,
+                    "verify_nbf": True,
+                    "require": ["exp"],
+                },
+            )
+        else:
+            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
         if user_id is None:
             raise credentials_exception

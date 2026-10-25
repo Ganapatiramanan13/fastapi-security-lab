@@ -894,3 +894,36 @@ class TestSecureCorsAllowlistParsing:
             _parse_allowed_origins("*")
         with pytest.raises(RuntimeError):
             _parse_allowed_origins("http://a.com,*")
+
+
+# ---------------------------------------------------------------------------
+# SECURITY REGRESSION TEST: JWT algorithm-verification protection (alg:none)
+#    (GET /admin via get_current_user — see secure_app/auth.py: algorithms=["HS256"])
+# ---------------------------------------------------------------------------
+class TestSecureJwtAlgNoneProtection:
+    """SECURITY REGRESSION TEST — a failure here means algorithm pinning regressed."""
+
+    def _forge_alg_none(self, sub="3", role="admin"):
+        claims = {
+            "sub": sub,
+            "username": "admin",
+            "role": role,
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
+        }
+        return jwt.encode(claims, key="", algorithm="none")
+
+    def test_alg_none_token_is_rejected(self, client):
+        """
+        The secure app pins algorithms=["HS256"], so an unsigned alg:none token
+        is rejected (never reaches the admin role check) with a generic 401.
+        """
+        forged = self._forge_alg_none(sub="3")
+        r = client.get("/admin", headers={"Authorization": f"Bearer {forged}"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Could not validate credentials"
+
+    def test_legitimate_admin_token_still_works(self, client):
+        """A real HS256 admin token is still accepted (control)."""
+        admin = login_as(client, ADMIN_USERNAME, ADMIN_PASSWORD)
+        r = client.get("/admin", headers={"Authorization": f"Bearer {admin['access_token']}"})
+        assert r.status_code == 200

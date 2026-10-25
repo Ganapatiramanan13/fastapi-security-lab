@@ -399,3 +399,108 @@ class TestVulnerableSecurityMisconfiguration:
             "referrer-policy",
         ):
             assert h not in r.headers
+
+
+def _forge_alg_none(sub, username="admin", role="admin", exp=None, nbf=None,
+                    include_exp=True):
+    """
+    Build an UNSIGNED JWT (alg:none) with attacker-chosen claims. No signing
+    secret is used or needed — that is the whole point of the alg:none attack.
+    exp defaults to 30 minutes in the future; pass exp/nbf to exercise the
+    time-based claim validation that the vulnerable path still enforces. Pass
+    include_exp=False to omit the exp claim entirely and exercise the required
+    -exp check.
+    """
+    now = datetime.now(timezone.utc)
+    claims = {
+        "sub": sub,
+        "username": username,
+        "role": role,
+    }
+    if include_exp:
+        claims["exp"] = exp if exp is not None else now + timedelta(minutes=30)
+    if nbf is not None:
+        claims["nbf"] = nbf
+    return jwt.encode(claims, key="", algorithm="none")
+
+
+# ---------------------------------------------------------------------------
+# INTENTIONAL VULNERABILITY DEMONSTRATION: JWT algorithm-verification (alg:none)
+#    (GET /admin via get_current_user — see vulnerable_app/auth.py)
+# ---------------------------------------------------------------------------
+class TestVulnerableJwtAlgNone:
+    """INTENTIONAL VULNERABILITY DEMONSTRATION — not a security guarantee."""
+
+    def test_alg_none_token_impersonates_admin_without_secret(self, client):
+        """
+        INTENTIONAL VULNERABILITY: an unsigned alg:none token with sub="3"
+        (the seeded admin's real id) is accepted and grants admin access,
+        without the attacker ever knowing the signing secret.
+        """
+        forged = _forge_alg_none(sub="3")
+        r = client.get("/admin", headers={"Authorization": f"Bearer {forged}"})
+        assert r.status_code == 200
+        assert r.json()["message"] == "Welcome to the admin area"
+
+    def test_hs256_signature_still_enforced(self, client):
+        """
+        The flaw is scoped to alg:none: a normal HS256 token signed with the
+        WRONG secret is still rejected, proving signature verification is not
+        globally disabled.
+        """
+        bad = jwt.encode(
+            {"sub": "3", "role": "admin", "exp": datetime.now(timezone.utc) + timedelta(minutes=30)},
+            "not-the-real-secret",
+            algorithm="HS256",
+        )
+        r = client.get("/admin", headers={"Authorization": f"Bearer {bad}"})
+        assert r.status_code == 401
+
+    def test_legitimate_login_token_still_works(self, client):
+        """A real HS256 token from /login still authenticates normally."""
+        token = login_alice(client)
+        r = client.get("/users/1", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert r.json()["id"] == 1
+
+    def test_alg_none_non_numeric_sub_still_401(self, client):
+        """Malformed/non-numeric sub handling is preserved even on the alg:none path."""
+        forged = _forge_alg_none(sub="not-a-number")
+        r = client.get("/admin", headers={"Authorization": f"Bearer {forged}"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Could not validate credentials"
+
+    def test_expired_alg_none_token_rejected(self, client):
+        """
+        Time-based validation is kept ON for the alg:none path: an unsigned
+        token with an expired exp is rejected (401), not accepted — the flaw
+        is isolated to signature verification.
+        """
+        forged = _forge_alg_none(
+            sub="3", exp=datetime.now(timezone.utc) - timedelta(minutes=5)
+        )
+        r = client.get("/admin", headers={"Authorization": f"Bearer {forged}"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Could not validate credentials"
+
+    def test_future_nbf_alg_none_token_rejected(self, client):
+        """An unsigned token that is not yet valid (future nbf) is rejected (401)."""
+        now = datetime.now(timezone.utc)
+        forged = _forge_alg_none(
+            sub="3", exp=now + timedelta(minutes=30), nbf=now + timedelta(minutes=10)
+        )
+        r = client.get("/admin", headers={"Authorization": f"Bearer {forged}"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Could not validate credentials"
+
+    def test_missing_exp_alg_none_token_rejected(self, client):
+        """
+        The vulnerable alg:none path requires an exp claim (require=["exp"]):
+        a structurally valid unsigned token with NO exp is rejected (401),
+        not accepted — the signature flaw does not also disable claim
+        requirements.
+        """
+        forged = _forge_alg_none(sub="3", include_exp=False)
+        r = client.get("/admin", headers={"Authorization": f"Bearer {forged}"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Could not validate credentials"

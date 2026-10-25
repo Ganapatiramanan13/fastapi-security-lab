@@ -12,6 +12,7 @@ Detailed write-ups document each vulnerability, its root cause, reproduction ste
 7. [Brute-Force Authentication — Unthrottled Login](docs/vulnerabilities/07-brute-force.md)
 8. [Account Lockout and Authentication Hardening](docs/vulnerabilities/08-account-lockout.md)
 9. [Security Misconfiguration — CORS and Missing Security Headers](docs/vulnerabilities/09-security-misconfiguration.md)
+10. [JWT Algorithm-Verification Flaw (alg:none)](docs/vulnerabilities/10-jwt-algorithm-verification.md)
 
 Supporting security test evidence is available in the [`evidence/`](evidence/) directory.
 ## Overview
@@ -35,7 +36,7 @@ Everything runs entirely on `127.0.0.1` against local SQLite databases. No exter
 
 ## Vulnerabilities Demonstrated
 
-Nine security topics are demonstrated across the two applications, each with a vulnerable behavior or missing control, a secure fix, an exploit or demonstration script, and automated tests.
+Ten security topics are demonstrated across the two applications, each with a vulnerable behavior or missing control, a secure fix, an exploit or demonstration script, and automated tests.
 
 ### 1. BOLA / IDOR (Broken Object Level Authorization)
 
@@ -119,6 +120,15 @@ Nine security topics are demonstrated across the two applications, each with a v
 - **Fix:** `secure_app` restricts CORS to an explicit, configurable allowlist (`SECURE_APP_ALLOWED_ORIGINS`, never a wildcard) and adds `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`, and `Referrer-Policy: no-referrer` to every response. (HSTS is set but only takes effect over HTTPS and provides no protection for this plain-HTTP lab — documented, not claimed.)
 - **Note:** these tests and the demo verify the **server's response headers** via `TestClient`, not full browser same-origin enforcement.
 
+### 10. JWT Algorithm-Verification Flaw (alg:none)
+
+- **Affected component:** JWT verification (`vulnerable_app/auth.py: get_current_user`), demonstrated on `GET /admin`.
+- **What's wrong:** The vulnerable verifier trusts the algorithm the token declares in its own header, so a token with `alg:"none"` is accepted **without any signature check**. An attacker can forge a token for any user id (e.g. the admin's `sub="3"`) and impersonate them **without knowing the signing secret**. This is an *intentionally introduced* educational flaw — both apps previously pinned HS256.
+- **Impact:** Complete authentication bypass / admin impersonation with no secret, password, or session — more severe than the weak-secret finding, which still requires the key.
+- **OWASP mapping:** OWASP API Security Top 10 — **API2:2023 Broken Authentication** (CWE-347 Improper Verification of Cryptographic Signature / CWE-345).
+- **Exploit:** `exploits/exploit_jwt_alg_none.py` forges an unsigned `alg:none` token for `sub="3"` and calls `GET /admin`: the vulnerable app returns `200`, the secure app `401`.
+- **Fix:** `secure_app` pins `algorithms=["HS256"]` and never trusts the token's self-declared algorithm, so `alg:none` is rejected (`401`) before any role check. The flaw is scoped to the algorithm decision, so HS256 signature verification, legitimate auth, and the weak-secret demo are unchanged.
+
 ### Related robustness fix (both apps)
 
 During JWT handling review, a related bug was found in both applications' `get_current_user()`: a token with a non-numeric `sub` claim could raise an unhandled `ValueError` when converted with `int()`, producing a `500 Internal Server Error`.
@@ -151,7 +161,7 @@ Both applications expose the same core route surface, but their security behavio
 | POST | `/login` | No | Verifies credentials and issues an HS256 JWT using the hardcoded `"supersecret"`; **Vulnerable — Brute Force:** no rate limit or lockout (unlimited attempts) |
 | GET | `/users/{user_id}` | JWT required | **Vulnerable — BOLA/IDOR:** returns any user's data without an ownership check |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Vulnerable — Mass Assignment:** applies arbitrary request fields, including `role` |
-| GET | `/admin` | JWT required | Checks the caller's role using the database record identified by the token's `sub` |
+| GET | `/admin` | JWT required | Checks the caller's role using the database record identified by the token's `sub`. **Vulnerable — alg:none:** accepts unsigned `alg:none` tokens, enabling forgery without the secret |
 | GET | `/admin/users` | JWT required | **Vulnerable — BFLA + Unrestricted Resource Consumption:** no admin-role check, and returns the entire table with no pagination (ignores `limit`) |
 | POST | `/orders` | JWT required | **Vulnerable — Improper Input Validation:** accepts a negative `quantity`/`unit_price` and persists a negative total |
 | GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
@@ -164,7 +174,7 @@ Both applications expose the same core route surface, but their security behavio
 | POST | `/login` | No | Verifies credentials, issues an HS256 JWT using `SECURE_APP_JWT_SECRET`, **rate-limits brute force** at 5 requests/minute per client IP (`429` after the 5th), **and locks an account** for 15 minutes after 5 consecutive failed passwords (generic `401` while locked) |
 | GET | `/users/{user_id}` | JWT required | **Fixed:** permits access to the caller's own record or an admin; otherwise returns `403` |
 | PUT | `/users/{user_id}` | JWT required; ownership checked | **Fixed:** permits only `username` and `email`; unexpected fields such as `role` return `422` |
-| GET | `/admin` | JWT required | Requires the caller to have the `admin` role |
+| GET | `/admin` | JWT required | Requires the caller to have the `admin` role; pins `algorithms=["HS256"]`, so `alg:none`/forged tokens are rejected with `401` |
 | GET | `/admin/users` | JWT required | **Fixed:** requires the `admin` role (`403` otherwise) and paginates results (`limit` 1–100 default 20, `offset` >= 0; invalid values `422`) |
 | POST | `/orders` | JWT required | **Fixed:** requires positive `quantity`/`unit_price` and forbids unexpected fields; invalid input returns `422` |
 | GET | `/orders/{order_id}` | JWT required; ownership checked | Returns the caller's own order, or any order for an admin; otherwise `403` |
@@ -207,7 +217,8 @@ fastapi-security-lab/
 │   ├── exploit_unrestricted_resource_consumption.py
 │   ├── exploit_brute_force.py
 │   ├── exploit_account_lockout.py
-│   └── exploit_security_misconfiguration.py
+│   ├── exploit_security_misconfiguration.py
+│   └── exploit_jwt_alg_none.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_vulnerable_security.py
@@ -294,6 +305,7 @@ python exploits/exploit_unrestricted_resource_consumption.py
 python exploits/exploit_brute_force.py
 python exploits/exploit_account_lockout.py
 python exploits/exploit_security_misconfiguration.py
+python exploits/exploit_jwt_alg_none.py
 ```
 
 Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
@@ -322,7 +334,7 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 87 passed.**
+**Latest recorded result: 96 passed.**
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 
@@ -356,7 +368,7 @@ This project practices and demonstrates:
 
 ## Limitations / Current Scope
 
-- The project demonstrates nine security topics in depth: BOLA/IDOR, mass assignment, weak JWT signing secrets, improper input validation, broken function-level authorization, unrestricted resource consumption, brute-force authentication, account lockout, and security misconfiguration (CORS and headers).
+- The project demonstrates ten security topics in depth: BOLA/IDOR, mass assignment, weak JWT signing secrets, improper input validation, broken function-level authorization, unrestricted resource consumption, brute-force authentication, account lockout, security misconfiguration (CORS and headers), and a JWT algorithm-verification flaw (alg:none).
 - Rate limiting is implemented only on `secure_app`'s `POST /login` endpoint, at 5 requests per minute per client IP. The vulnerable application intentionally remains unrestricted, and other endpoints are not rate-limited.
 - The current rate limiter is in-memory and IP-based. It is appropriate for this local learning lab but is not a complete production defense against distributed brute-force attempts or resource exhaustion.
 - Additional authentication scenarios, such as password-strength enforcement and credential-stuffing defenses, are not implemented. (Account lockout is implemented — see the Account Lockout report.)
