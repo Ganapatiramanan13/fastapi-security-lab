@@ -163,7 +163,7 @@ invented beyond what the script and test actually produce.
   and `{"message": "Welcome to the admin area"}`.
 - `evidence/06-weak-jwt-secure.png` — the same `sub="3"` token, forged with
   `"supersecret"`, sent to the secure app (`http://127.0.0.1:8001`)
-  `GET /admin`: it is rejected with `401 Unauthorized` and
+  `GET /admin`: the request is rejected with `401 Unauthorized` and
   `{"detail": "Could not validate credentials"}`, because the secure app
   verifies signatures against its own secret, which is not `"supersecret"`.
 
