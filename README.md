@@ -247,6 +247,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+On Windows, create the virtual environment the same way (`python -m venv .venv`) but activate it with one of the following instead of the `source` command above, then install dependencies as shown:
+
+```powershell
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+```bat
+:: Windows Command Prompt
+.venv\Scripts\activate.bat
+```
+
 ### Seed the databases
 
 Each application has its own seed script and SQLite database. Run each script once before starting the corresponding server:
@@ -310,12 +322,43 @@ python exploits/exploit_jwt_alg_none.py
 
 Each script uses the demo credentials, prints relevant request/response details, and ends with a `RESULT:` line explaining what it proved. Complete JWTs should not be printed or included in screenshots.
 
+> **Reseed between demonstrations.** `exploit_mass_assignment.py` persistently changes Alice's role to `admin` in the vulnerable database. Later demonstrations that assume Alice has the ordinary `user` role — notably `exploit_weak_jwt.py`, whose baseline expects her legitimate token to be denied `/admin` with `403` — need the database reseeded first. Reseed with the existing command before rerunning them:
+>
+> ```bash
+> python -m vulnerable_app.seed_data
+> ```
+
+### Choosing the target
+
+By default every script targets `http://127.0.0.1:8000` — the vulnerable application. The target is resolved and safety-checked by `exploits/_target.py` when a script runs (inside `main()`), not when the module is imported, and always before any request is sent, with this precedence:
+
+1. the `--target <url>` command-line argument;
+2. the `EXPLOIT_TARGET` environment variable;
+3. the default, `http://127.0.0.1:8000`.
+
+The helper accepts **only loopback targets**: the host must be `127.0.0.1`, `localhost`, or `::1`, the scheme must be `http` or `https`, the URL must not embed credentials, and the port must be stated explicitly and be one of the two lab ports — **`8000` (vulnerable app)** or **`8001` (secure app)**. Any other host, port, or scheme is rejected with an error and a non-zero exit, before any network call. (The host is checked on the parsed hostname, so lookalikes such as `http://127.0.0.1.example.com:8000` are rejected.)
+
+Examples (the existing invocation style still works unchanged):
+
+```bash
+# Default: the vulnerable app on port 8000
+python exploits/exploit_bola.py
+
+# Override for this run via the command-line argument
+python exploits/exploit_bola.py --target http://127.0.0.1:8001
+
+# Override via the environment variable (applies to each script you run)
+EXPLOIT_TARGET=http://localhost:8000 python exploits/exploit_weak_jwt.py
+```
+
+Port `8000` is the vulnerable app and port `8001` is the secure app. These demonstrations are written for the **vulnerable** app: although the loopback guard permits `8001`, pointing an exploit at the secure app will not reproduce the vulnerable outcome — the secure app is built to resist these attacks, so a script may instead report that the attack failed (or behave differently) unless that script's own code explicitly handles the secure app. Use `8001` only when you specifically want to observe the secure app's defensive behavior, not as a drop-in substitute for the vulnerable target.
+
 ## Security Fixes
 
 | Finding or control | Fix or behavior |
 |---|---|
 | BOLA / IDOR | `secure_app` checks object-level authorization on `GET /users/{user_id}` and returns `403` for unauthorized cross-user access. |
-| Mass Assignment | `secure_app` allows only `username` and `email` during profile updates and rejects unexpected fields such as `role` with `422`. |
+| Mass Assignment | `secure_app` allows only `username` and `email` during profile updates and rejects unexpected fields such as `role` with `422`. An empty `username` is also rejected with `422` (`min_length=1`), and a duplicate `username`/`email` is handled at commit with a rollback and `409 Conflict` (generic message, no DB details). |
 | Weak JWT Secret | `secure_app` reads the signing secret from `SECURE_APP_JWT_SECRET`, enforces a minimum length, and refuses to start if the secret is missing or too short. |
 | Non-numeric JWT `sub` claim | Both applications return `401` rather than an unhandled `500` when the subject claim cannot be converted to an integer. |
 | Login rate limiting | `secure_app` limits `POST /login` to 5 requests per minute per client IP. Excess requests return `429 Too Many Requests`. |
@@ -334,7 +377,9 @@ Run the full suite from the repository root:
 python -m pytest tests/ -v
 ```
 
-**Latest recorded result: 96 passed.**
+> **The full suite rewrites the real demo databases.** `tests/test_vulnerable_security.py` and `tests/test_secure_security.py` use autouse fixtures that call each app's seed routine before every test, which drops, recreates, and reseeds `vulnerable_app/vulnerable.db` and `secure_app/secure.db` in place. Running the full suite therefore discards any local state in those databases (for example, a role an exploit demonstration left behind) and resets both to their seeded demo data. Run it only when that is acceptable; to exercise a single area without resetting the databases, run a specific test file or node instead (e.g. `python -m pytest tests/test_secure_startup_config.py -v`).
+
+**Previously recorded full-suite result: 96 passed.** That figure is from an earlier run and was not re-verified during this integration — the full suite was not rerun here, because it reseeds the demo databases (see the note above). During this integration only the focused test files covering these changes were run, and all passed (40 passed, 1 unrelated warning). Run the full suite deliberately when a reseed is acceptable; individual test files can be run on their own without resetting the databases.
 
 The login rate-limit regression test checks that the first five invalid login attempts return `401 Unauthorized` and the sixth returns `429 Too Many Requests` within the configured limit window. The test suite uses FastAPI's `TestClient`; no external service is required.
 

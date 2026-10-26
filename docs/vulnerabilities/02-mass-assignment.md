@@ -138,7 +138,7 @@ layers of defense.
 ```python
 class UserUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    username: str | None = None
+    username: str | None = Field(default=None, min_length=1)
     email: str | None = None
 ```
 
@@ -146,6 +146,12 @@ class UserUpdate(BaseModel):
 any unrecognized field in the request body — including `role` — causes
 Pydantic to reject the entire request with `422 Unprocessable Entity`
 before the endpoint function ever runs.
+
+`username` is optional: `None` (or an omitted field) means "no username
+change was requested". When it *is* provided, `min_length=1` requires it
+to be non-empty, so an empty `""` username is rejected with
+`422 Unprocessable Entity` at the validation boundary. (This schema does
+not constrain whitespace-only values or validate email format.)
 
 **2. Explicit field assignment** (`secure_app/routers/users.py`), as
 defense in depth even though the schema already blocks `role`:
@@ -160,6 +166,17 @@ if update.email is not None:
 No generic `setattr` loop over arbitrary request keys is used — only
 the two explicitly named, known-safe fields are ever assigned. Ownership
 is still enforced exactly as before (`current_user.id == user_id`).
+
+**Duplicate-value handling at commit** (`secure_app/routers/users.py`):
+`username` and `email` are unique columns, so a profile update that
+collides with another user's value raises a SQLAlchemy `IntegrityError`
+on `db.commit()`. The endpoint catches that error, rolls back the
+session (`db.rollback()`) so it stays usable, and returns
+`409 Conflict` with the generic message `Username or email already in
+use`. The response deliberately does not reveal which field collided or
+expose any SQL or database internals. (This is a robustness/error-handling
+improvement to the secure endpoint; it is not itself the mass-assignment
+fix, which is the schema allowlist plus explicit assignment above.)
 
 **Related fix:** while reviewing JWT handling for this project, a
 related robustness issue was found and fixed in both apps' `auth.py`:
@@ -190,6 +207,8 @@ verifies the fix directly:
 | Update schema | `role` is a normal, optional, client-writable field | `role` does not exist on the schema; `extra="forbid"` rejects unknown fields |
 | Field application | Generic loop: `setattr(user, field, value)` for every field sent | Explicit assignment of only `username`/`email` |
 | `PUT` with `{"email": ..., "role": "admin"}` | `200`, role becomes `"admin"` | `422 Unprocessable Entity`, role unchanged |
+| Empty `username` (`""`) | Accepted (no length constraint) | `422 Unprocessable Entity` (`min_length=1`) |
+| Duplicate `username`/`email` on commit | — | `409 Conflict`, session rolled back, generic message |
 | Ownership check | Enforced (`current_user.id == user_id`) | Enforced (`current_user.id == user_id`) |
 
 ## Interview Takeaway
