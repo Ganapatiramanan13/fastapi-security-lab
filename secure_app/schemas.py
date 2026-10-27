@@ -56,7 +56,10 @@ class UserUpdate(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
 
-    username: str | None = None
+    # username, when provided, must be non-empty. Pydantic rejects ""
+    # with HTTP 422 at the validation boundary, before the endpoint runs.
+    # None still means "leave username unchanged".
+    username: str | None = Field(default=None, min_length=1)
     email: str | None = None
 
 

@@ -8,6 +8,7 @@ field allowlist (plus ownership check) on PUT.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from secure_app.auth import get_current_user
@@ -119,7 +120,19 @@ def update_user(
     if update.email is not None:
         user.email = update.email
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # username and email are UNIQUE (see models.py). A collision with
+        # another user's value raises IntegrityError on commit. Roll back
+        # so the session/transaction stays usable, then return a generic
+        # 409 — never leak SQL, the offending field, or DB internals.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username or email already in use",
+        )
+
     db.refresh(user)
 
     return user
